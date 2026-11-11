@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/noir017/gofer-cli/internal/model"
 )
@@ -233,6 +234,104 @@ plain body
 	}
 	if !strings.Contains(m.HTML, "<p>HTML body</p>") {
 		t.Errorf("HTML = %q", m.HTML)
+	}
+}
+
+func TestParseInlineHTMLBody(t *testing.T) {
+	// An inline HTML body may carry a filename; it is still the body.
+	raw := []byte(`From: a@example.com
+To: b@example.com
+Subject: test
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+Content-Disposition: inline; filename="message.html"
+
+<p>Hello <b>world</b></p>
+`)
+	m, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(m.Attachments) != 0 {
+		t.Errorf("Attachments = %+v, want none", m.Attachments)
+	}
+	if !strings.Contains(m.HTML, "<b>world</b>") {
+		t.Errorf("HTML = %q", m.HTML)
+	}
+	if m.Text != "Hello world" {
+		t.Errorf("Text = %q", m.Text)
+	}
+}
+
+func TestParsePlaceholderPlain(t *testing.T) {
+	raw := []byte(`From: a@example.com
+To: b@example.com
+Subject: test
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b"
+
+--b
+Content-Type: text/plain
+
+This is a multi-part message in MIME format.
+
+--b
+Content-Type: text/html
+
+<p>Real HTML body</p>
+
+--b--
+`)
+	m, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if m.Text != "Real HTML body" {
+		t.Errorf("Text = %q, want the HTML body", m.Text)
+	}
+}
+
+func TestParseMultipartWithoutBoundary(t *testing.T) {
+	raw := []byte(`From: a@example.com
+To: b@example.com
+Subject: test
+MIME-Version: 1.0
+Content-Type: multipart/mixed
+
+Hello body text
+`)
+	m, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !strings.Contains(m.Text, "Hello body text") {
+		t.Errorf("Text = %q, want the raw body", m.Text)
+	}
+}
+
+func TestParseLargeHTMLTruncated(t *testing.T) {
+	raw := []byte("From: a@example.com\nSubject: test\nMIME-Version: 1.0\nContent-Type: text/html\n\n" +
+		strings.Repeat("a", maxHTMLBytes+4096))
+	m, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(m.HTML) != maxHTMLBytes {
+		t.Errorf("len(HTML) = %d, want %d", len(m.HTML), maxHTMLBytes)
+	}
+}
+
+func TestParseDeepNestingIsFast(t *testing.T) {
+	// x/net versions before v0.47.0 could loop or go quadratic here; v0.47.0
+	// rejects an open stack beyond 512 elements immediately.
+	html := strings.Repeat("<div>", 20000) + "deep" + strings.Repeat("</div>", 20000)
+	raw := []byte("From: a@example.com\nSubject: test\nMIME-Version: 1.0\nContent-Type: text/html\n\n" + html)
+	start := time.Now()
+	if _, err := Parse(raw); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("Parse took %v, want under 3s", elapsed)
 	}
 }
 

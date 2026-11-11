@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/emersion/go-message"
 	_ "github.com/emersion/go-message/charset"
@@ -15,6 +16,10 @@ import (
 
 	"github.com/noir017/gofer-cli/internal/model"
 )
+
+// maxHTMLBytes bounds the HTML body kept and parsed. Larger bodies are cut so
+// a hostile message cannot make the HTML parser work on unbounded input.
+const maxHTMLBytes = 2 << 20
 
 // Parse reads an RFC 822 message: headers decoded (RFC 2047), any charset to
 // UTF-8, Text from text/plain or else from text/html, attachments listed.
@@ -77,7 +82,7 @@ func parse(raw []byte) (*model.Message, []attachment, error) {
 
 	// Walk is best effort: a broken part is skipped rather than failing the
 	// whole message.
-	_ = e.Walk(func(_ []int, ent *message.Entity, _ error) error {
+	walkErr := e.Walk(func(_ []int, ent *message.Entity, _ error) error {
 		if ent == nil || ent.MultipartReader() != nil {
 			return nil
 		}
@@ -98,10 +103,14 @@ func parse(raw []byte) (*model.Message, []attachment, error) {
 		data, _ := io.ReadAll(ent.Body)
 
 		// text/plain and text/html are the body unless the sender marked them
-		// as a file.
-		if (ct == "text/plain" || ct == "text/html") && disp != "attachment" && filename == "" {
+		// as an attachment. An inline HTML part keeps a filename in some
+		// clients and is still the message body.
+		if (ct == "text/plain" || ct == "text/html") && disp != "attachment" {
+			if ct == "text/html" {
+				data = truncateHTML(data, maxHTMLBytes)
+			}
 			body := string(data)
-			if strings.TrimSpace(body) == "" {
+			if isPlaceholderBody(body) {
 				return nil
 			}
 			if ct == "text/plain" {
@@ -136,6 +145,16 @@ func parse(raw []byte) (*model.Message, []attachment, error) {
 	if m.Text == "" && m.HTML != "" {
 		m.Text = htmlToText(m.HTML)
 	}
+	// A multipart header without a boundary (or another broken multipart
+	// structure) leaves Walk with nothing. Keep the raw body as text instead
+	// of dropping the message content.
+	if walkErr != nil && m.Text == "" && m.HTML == "" && len(atts) == 0 {
+		if broken, _ := message.Read(bytes.NewReader(raw)); broken != nil {
+			if data, err := io.ReadAll(broken.Body); err == nil {
+				m.Text = strings.TrimSpace(strings.ReplaceAll(string(data), "\r\n", "\n"))
+			}
+		}
+	}
 	if len(atts) > 0 {
 		m.Attachments = make([]model.Attachment, len(atts))
 		for i, a := range atts {
@@ -155,6 +174,33 @@ func addressList(h *mail.Header, key string) []model.Address {
 		out = append(out, model.Address{Name: a.Name, Email: a.Address})
 	}
 	return out
+}
+
+// isPlaceholderBody reports bodies that carry no message: whitespace or the
+// stock line multipart generators leave in a text/plain part.
+func isPlaceholderBody(s string) bool {
+	s = strings.Join(strings.Fields(s), " ")
+	if s == "" {
+		return true
+	}
+	return strings.EqualFold(s, "This is a multi-part message in MIME format.") ||
+		strings.EqualFold(s, "This is a multi-part message in MIME format")
+}
+
+// truncateHTML cuts an oversized HTML body, keeping valid UTF-8 at the end.
+func truncateHTML(data []byte, max int) []byte {
+	if len(data) <= max {
+		return data
+	}
+	data = data[:max]
+	for len(data) > 0 {
+		r, size := utf8.DecodeLastRune(data)
+		if r != utf8.RuneError || size > 1 {
+			break
+		}
+		data = data[:len(data)-1]
+	}
+	return data
 }
 
 var (

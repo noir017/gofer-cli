@@ -7,10 +7,23 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/net/html"
 
 	"github.com/noir017/gofer-cli/internal/model"
+)
+
+const (
+	// otpWindow is how far around a keyword a code may sit.
+	otpWindow = 120
+	// otpKeywordMax bounds the work on very large or repetitive bodies.
+	otpKeywordMax = 500
+	// otpLinkMax bounds the number of URLs considered per message.
+	otpLinkMax = 500
+	// otpURLContext is how much text before a plain URL is inspected for
+	// words such as "unsubscribe".
+	otpURLContext = 60
 )
 
 // OTP returns the verification code in m. A non-empty pattern is a regexp
@@ -29,7 +42,7 @@ func OTP(m *model.Message, pattern string) (string, bool) {
 			if text == "" {
 				continue
 			}
-			match := re.FindStringSubmatch(text)
+			match := re.FindStringSubmatch(normalizeWidth(text))
 			if match == nil {
 				continue
 			}
@@ -55,25 +68,56 @@ func OTP(m *model.Message, pattern string) (string, bool) {
 	if len(cands) == 0 {
 		return "", false
 	}
-	sort.SliceStable(cands, func(i, j int) bool {
-		if cands[i].score != cands[j].score {
-			return cands[i].score > cands[j].score
+
+	seen := make(map[string]bool, len(cands))
+	uniq := make([]otpCandidate, 0, len(cands))
+	for _, c := range cands {
+		key := c.code + "|" + strconv.Itoa(c.pos)
+		if seen[key] {
+			continue
 		}
-		return cands[i].pos < cands[j].pos
+		seen[key] = true
+		uniq = append(uniq, c)
+	}
+	sort.SliceStable(uniq, func(i, j int) bool {
+		if uniq[i].score != uniq[j].score {
+			return uniq[i].score > uniq[j].score
+		}
+		return uniq[i].pos < uniq[j].pos
 	})
-	return cands[0].code, true
+	return uniq[0].code, true
 }
 
 var (
-	reKeywordCN = regexp.MustCompile(`验证码|校验码|动态码|动态密码|确认码|激活码|安全码|登录码|一次性密码|验证代码|驗證碼|校驗碼|動態碼|動態密碼|確認碼|啟動碼|安全碼|登入碼|一次性密碼|驗證代碼|認證碼`)
-	reKeywordEN = regexp.MustCompile(`(?i)\b(?:otp|pin|passcode|password|verification|verify|confirmation|security|authentication|auth|code)\b`)
-	reOTPDigits = regexp.MustCompile(`\d{4,8}`)
-	reOTPAlnum  = regexp.MustCompile(`[A-Z0-9]{4,8}`)
-	reTextURL   = regexp.MustCompile("https?://[^\\s<>\"'`，。；：！？）】》」、]+")
-	// Links that usually lead straight to the action come first; generic
-	// sign-in links are weaker.
-	strongLinkKeywords = []string{"verify", "confirm", "activate", "validate", "token", "magic", "reset"}
-	weakLinkKeywords   = []string{"login", "signin", "sign-in", "auth"}
+	cnKeywords = []string{
+		"验证码", "校验码", "动态码", "动态密码", "确认码", "激活码", "安全码",
+		"登录码", "一次性密码", "验证代码", "认证码",
+		"驗證碼", "校驗碼", "動態碼", "動態密碼", "確認碼", "啟動碼", "安全碼",
+		"登入碼", "一次性密碼", "驗證代碼", "認證碼",
+	}
+	enKeywords = []string{
+		"otp", "pin", "passcode", "password", "verification", "verify",
+		"confirmation", "security", "authentication", "auth", "code",
+	}
+
+	reOTPDigits   = regexp.MustCompile(`\d{4,8}`)
+	reSplitDigits = regexp.MustCompile(`\d(?:\s+\d){3,7}`)
+	reOTPAlnum    = regexp.MustCompile(`[A-Za-z0-9]{4,8}`)
+
+	reTextURL       = regexp.MustCompile("https?://[^\\s<>\"'`，。；：！？）】》」、]+")
+	reLineEndsURL   = regexp.MustCompile(`https?://\S+$`)
+	strongLinkWords = []string{
+		"verify", "verification", "confirm", "confirmation", "activate",
+		"activation", "validate", "validation", "token", "magic", "reset",
+	}
+	weakLinkWords = []string{
+		"login", "log in", "signin", "sign in", "sign-in", "auth", "authentication",
+	}
+	junkWords = []string{
+		"unsubscribe", "opt-out", "optout", "privacy", "help", "track",
+		"pixel", "beacon", "open.gif",
+		"退订", "取消订阅", "隐私", "隱私", "帮助", "幫助",
+	}
 )
 
 type span struct{ start, end int }
@@ -88,74 +132,139 @@ func scanOTP(text string, weight int, out *[]otpCandidate) {
 	if text == "" {
 		return
 	}
+	text = normalizeWidth(text)
 	kws := keywordSpans(text)
 	if len(kws) == 0 {
 		return
 	}
+	for _, kw := range kws {
+		start := kw.start - otpWindow
+		if start < 0 {
+			start = 0
+		}
+		end := kw.end + otpWindow
+		if end > len(text) {
+			end = len(text)
+		}
+		scanWindow(text, start, end, kw, weight, out)
+	}
+}
 
-	// 4 to 8 digits close to a keyword.
-	for _, loc := range reOTPDigits.FindAllStringIndex(text, -1) {
-		if !asciiTokenBoundary(text, loc[0], loc[1]) {
+// scanWindow looks for codes in text[start:end] and scores them by their
+// distance to kw.
+func scanWindow(text string, start, end int, kw span, weight int, out *[]otpCandidate) {
+	window := text[start:end]
+
+	for _, loc := range reOTPDigits.FindAllStringIndex(window, -1) {
+		s, e := start+loc[0], start+loc[1]
+		if !asciiTokenBoundary(text, s, e) || noiseNumber(text, s, e) {
 			continue
 		}
-		if noiseNumber(text, loc[0], loc[1]) {
-			continue
-		}
-		dist := keywordDistance(kws, loc[0], loc[1])
+		dist := keywordGap(kw, s, e)
 		if dist > 80 {
 			continue
 		}
-		code := text[loc[0]:loc[1]]
+		code := text[s:e]
 		score := weight + 60 - dist
 		if len(code) == 6 {
 			score += 15
 		}
-		*out = append(*out, otpCandidate{code: code, score: score, pos: loc[0]})
+		*out = append(*out, otpCandidate{code: code, score: score, pos: s})
 	}
 
-	// Upper-case letters and digits mixed, only when right next to a keyword.
-	for _, loc := range reOTPAlnum.FindAllStringIndex(text, -1) {
-		code := text[loc[0]:loc[1]]
-		if !mixedUpperAlnum(code) {
+	// Digits split by spaces or line breaks, as "1 2 3 4 5 6" or one digit
+	// per table cell rendered to text.
+	for _, loc := range reSplitDigits.FindAllStringIndex(window, -1) {
+		s, e := start+loc[0], start+loc[1]
+		code := strings.Join(strings.Fields(text[s:e]), "")
+		if len(code) < 4 || len(code) > 8 {
 			continue
 		}
-		if !asciiTokenBoundary(text, loc[0], loc[1]) {
+		if !asciiTokenBoundary(text, s, e) || noiseNumber(text, s, e) {
 			continue
 		}
-		dist := keywordDistance(kws, loc[0], loc[1])
+		dist := keywordGap(kw, s, e)
+		if dist > 80 {
+			continue
+		}
+		score := weight + 60 - dist + 5
+		if len(code) == 6 {
+			score += 15
+		}
+		*out = append(*out, otpCandidate{code: code, score: score, pos: s})
+	}
+
+	// Letters and digits mixed, only right next to a keyword.
+	for _, loc := range reOTPAlnum.FindAllStringIndex(window, -1) {
+		s, e := start+loc[0], start+loc[1]
+		code := text[s:e]
+		if !mixedAlnum(code) || !asciiTokenBoundary(text, s, e) {
+			continue
+		}
+		dist := keywordGap(kw, s, e)
 		if dist > 16 {
 			continue
 		}
-		*out = append(*out, otpCandidate{code: code, score: weight + 60 - dist + 5, pos: loc[0]})
+		*out = append(*out, otpCandidate{code: code, score: weight + 60 - dist + 5, pos: s})
 	}
 }
 
+// keywordSpans finds keyword hits without scanning candidates over the whole
+// body. It keeps at most otpKeywordMax hits.
 func keywordSpans(text string) []span {
-	var out []span
-	for _, loc := range reKeywordCN.FindAllStringIndex(text, -1) {
-		out = append(out, span{loc[0], loc[1]})
+	lower := asciiLower(text)
+	out := make([]span, 0, 8)
+	for _, kw := range cnKeywords {
+		for off := 0; len(out) < otpKeywordMax; {
+			i := strings.Index(lower[off:], kw)
+			if i < 0 {
+				break
+			}
+			s := off + i
+			out = append(out, span{s, s + len(kw)})
+			off = s + len(kw)
+		}
 	}
-	for _, loc := range reKeywordEN.FindAllStringIndex(text, -1) {
-		out = append(out, span{loc[0], loc[1]})
+	for _, kw := range enKeywords {
+		for off := 0; len(out) < otpKeywordMax; {
+			i := boundedIndex(lower, kw, off)
+			if i < 0 {
+				break
+			}
+			out = append(out, span{i, i + len(kw)})
+			off = i + len(kw)
+		}
 	}
 	return out
 }
 
-func keywordDistance(kws []span, start, end int) int {
-	best := -1
-	for _, k := range kws {
-		var d int
-		switch {
-		case start >= k.end:
-			d = start - k.end
-		case end <= k.start:
-			d = k.start - end
-		}
-		if best < 0 || d < best {
-			best = d
-		}
+func keywordGap(k span, start, end int) int {
+	switch {
+	case start >= k.end:
+		return start - k.end
+	case end <= k.start:
+		return k.start - end
+	default:
+		return 0
 	}
-	return best
+}
+
+// boundedIndex is strings.Index that requires the hit not to be glued to
+// other ASCII letters or digits, so "auth" does not match "authors".
+func boundedIndex(s, word string, from int) int {
+	for from <= len(s)-len(word) {
+		i := strings.Index(s[from:], word)
+		if i < 0 {
+			return -1
+		}
+		start := from + i
+		end := start + len(word)
+		if (start == 0 || !isASCIIAlnum(s[start-1])) && (end == len(s) || !isASCIIAlnum(s[end])) {
+			return start
+		}
+		from = start + 1
+	}
+	return -1
 }
 
 // asciiTokenBoundary reports whether the match is not glued to other ASCII
@@ -170,15 +279,15 @@ func asciiTokenBoundary(text string, start, end int) bool {
 	return true
 }
 
-func mixedUpperAlnum(s string) bool {
+func mixedAlnum(s string) bool {
 	var letter, digit bool
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case c >= 'A' && c <= 'Z':
-			letter = true
 		case c >= '0' && c <= '9':
 			digit = true
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			letter = true
 		default:
 			return false
 		}
@@ -191,11 +300,9 @@ func mixedUpperAlnum(s string) bool {
 func noiseNumber(text string, start, end int) bool {
 	code := text[start:end]
 
-	// Years.
-	if len(code) == 4 {
-		if n, err := strconv.Atoi(code); err == nil && n >= 1900 && n <= 2099 {
-			return true
-		}
+	// A year, but only when the surrounding text looks like a date.
+	if len(code) == 4 && isYear(code) && inDateContext(text, start, end) {
+		return true
 	}
 
 	// A phone number split by spaces, dashes or parentheses.
@@ -240,10 +347,45 @@ func noiseNumber(text string, start, end int) bool {
 	return false
 }
 
+func isYear(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= 1900 && n <= 2099
+}
+
+func inDateContext(text string, start, end int) bool {
+	left := start - 6
+	if left < 0 {
+		left = 0
+	}
+	right := end + 6
+	if right > len(text) {
+		right = len(text)
+	}
+	for _, r := range text[left:start] + text[end:right] {
+		if r == '年' || r == '月' || r == '日' {
+			return true
+		}
+	}
+	if end < len(text) && isDateSeparator(text[end]) {
+		return true
+	}
+	if start > 0 && isDateSeparator(text[start-1]) {
+		return true
+	}
+	return false
+}
+
+func isDateSeparator(c byte) bool { return c == '-' || c == '/' || c == '.' }
+
 // digitRun counts the digits around a match when they are joined only by
 // phone-number separators.
 func digitRun(text string, start, end int) int {
-	count := end - start
+	count := 0
+	for i := start; i < end; i++ {
+		if isASCIIDigit(text[i]) {
+			count++
+		}
+	}
 	for i := start - 1; i >= 0; i-- {
 		c := text[i]
 		if isASCIIDigit(c) {
@@ -283,6 +425,36 @@ func isASCIIAlnum(c byte) bool {
 	return isASCIIDigit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
+// normalizeWidth maps full-width ASCII forms to their half-width equivalents
+// so １２３４５６ and １２３４５６ are read the same way.
+func normalizeWidth(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\u3000':
+			b.WriteByte(' ')
+		case r >= '\uff01' && r <= '\uff5e':
+			b.WriteRune(r - 0xfee0)
+		case r == '\uffe5':
+			b.WriteRune('¥')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i := 0; i < len(b); i++ {
+		if b[i] >= 'A' && b[i] <= 'Z' {
+			b[i] += 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
 // Link returns the verification or sign-in link in m. A non-empty match is a
 // regexp the link must match.
 func Link(m *model.Message, match string) (string, bool) {
@@ -298,12 +470,27 @@ func Link(m *model.Message, match string) (string, bool) {
 		filter = re
 	}
 
+	text := joinWrappedURLs(strings.ReplaceAll(m.Text, "\r\n", "\n"))
+
 	var cands []linkCandidate
 	cands = append(cands, htmlAnchors(m.HTML)...)
-	for _, loc := range reTextURL.FindAllStringIndex(m.Text, -1) {
-		if u := cleanTextURL(m.Text[loc[0]:loc[1]]); u != "" {
-			cands = append(cands, linkCandidate{url: u, order: len(cands)})
+	for _, loc := range reTextURL.FindAllStringIndex(text, -1) {
+		if len(cands) >= otpLinkMax {
+			break
 		}
+		u := cleanTextURL(text[loc[0]:loc[1]])
+		if u == "" {
+			continue
+		}
+		ctxStart := loc[0] - otpURLContext
+		if ctxStart < 0 {
+			ctxStart = 0
+		}
+		cands = append(cands, linkCandidate{
+			url:     u,
+			context: lastClause(text[ctxStart:loc[0]]),
+			order:   len(cands),
+		})
 	}
 
 	seen := make(map[string]bool)
@@ -332,10 +519,11 @@ func Link(m *model.Message, match string) (string, bool) {
 }
 
 type linkCandidate struct {
-	url   string
-	text  string
-	score int
-	order int
+	url     string
+	text    string
+	context string
+	score   int
+	order   int
 }
 
 func linkScore(c linkCandidate) int {
@@ -343,15 +531,15 @@ func linkScore(c linkCandidate) int {
 	t := strings.ToLower(c.text)
 	score := 0
 	switch {
-	case containsAny(u, strongLinkKeywords):
+	case hasBoundedAny(u, strongLinkWords):
 		score += 100
-	case containsAny(u, weakLinkKeywords):
+	case hasBoundedAny(u, weakLinkWords):
 		score += 60
 	}
 	switch {
-	case containsAny(t, strongLinkKeywords):
+	case hasBoundedAny(t, strongLinkWords):
 		score += 80
-	case containsAny(t, weakLinkKeywords):
+	case hasBoundedAny(t, weakLinkWords):
 		score += 40
 	}
 	if c.text != "" {
@@ -360,28 +548,71 @@ func linkScore(c linkCandidate) int {
 	return score
 }
 
-func containsAny(s string, words []string) bool {
+func hasBoundedAny(s string, words []string) bool {
 	for _, w := range words {
-		if strings.Contains(s, w) {
+		if hasBoundedWord(s, w) {
 			return true
 		}
 	}
 	return false
 }
 
+func hasBoundedWord(s, word string) bool {
+	return boundedIndex(s, word, 0) >= 0
+}
+
+// junkLink rejects unsubscribe, privacy and help links. URLs are matched by
+// path segment or query token, so "help-center/verify" is not a help link;
+// text is matched by word, so "authors" is not "auth".
 func junkLink(c linkCandidate) bool {
-	s := strings.ToLower(c.url + " " + c.text)
-	for _, word := range []string{
-		"unsubscribe", "opt out", "opt-out", "退订", "取消订阅",
-		"privacy", "隐私", "隱私",
-		"help", "帮助", "幫助",
-		"/track", "pixel", "beacon", "open.gif",
-	} {
-		if strings.Contains(s, word) {
+	if urlHasJunk(c.url) {
+		return true
+	}
+	s := strings.ToLower(c.text + " " + c.context)
+	for _, w := range junkWords {
+		if isASCIIWord(w) {
+			if hasBoundedWord(s, w) {
+				return true
+			}
+		} else if strings.Contains(s, w) {
 			return true
 		}
 	}
 	return false
+}
+
+func urlHasJunk(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	for _, seg := range strings.Split(strings.ToLower(u.Path), "/") {
+		for _, w := range junkWords {
+			if isASCIIWord(w) && seg == w {
+				return true
+			}
+		}
+	}
+	for key, values := range u.Query() {
+		for _, v := range append([]string{key}, values...) {
+			lv := strings.ToLower(v)
+			for _, w := range junkWords {
+				if isASCIIWord(w) && lv == w {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func isASCIIWord(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 func htmlAnchors(raw string) []linkCandidate {
@@ -403,11 +634,18 @@ func htmlAnchors(raw string) []linkCandidate {
 					base = htmlAttr(n, "href")
 				}
 			case "a":
-				href := htmlAttr(n, "href")
-				if u := resolveURL(base, href); u != "" {
+				text := normalizeText(nodeText(n))
+				if text == "" {
+					text = normalizeText(htmlAttr(n, "title"))
+				}
+				// A bare image with no alt or title is not a readable link.
+				if text == "" {
+					return
+				}
+				if u := resolveURL(base, htmlAttr(n, "href")); u != "" {
 					out = append(out, linkCandidate{
 						url:   u,
-						text:  normalizeText(nodeText(n)),
+						text:  text,
 						order: len(out),
 					})
 				}
@@ -474,6 +712,76 @@ func cleanTextURL(s string) string {
 	return u.String()
 }
 
+// joinWrappedURLs joins URLs broken over a line by a 78-column wrap: the line
+// ends in a URL and the next line starts with more URL, not with whitespace.
+func joinWrappedURLs(text string) string {
+	if !strings.Contains(text, "\n") {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i := 0; i+1 < len(lines); i++ {
+		line := lines[i]
+		if len(line) < 72 || len(line) > 84 {
+			continue
+		}
+		if !reLineEndsURL.MatchString(line) {
+			continue
+		}
+		next := lines[i+1]
+		if next == "" || next[0] == ' ' || next[0] == '\t' {
+			continue
+		}
+		token := next
+		if j := strings.IndexAny(next, " \t"); j >= 0 {
+			token = next[:j]
+		}
+		if !urlContinuation(token) {
+			continue
+		}
+		lines[i] = line + token
+		lines[i+1] = next[len(token):]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func urlContinuation(s string) bool {
+	if len(s) < 4 {
+		return false
+	}
+	mark := false
+	digit := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			digit = true
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case c == '-' || c == '.' || c == '_' || c == '~' || c == ':' || c == '/' ||
+			c == '?' || c == '#' || c == '[' || c == ']' || c == '@' || c == '!' ||
+			c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' ||
+			c == '+' || c == ',' || c == ';' || c == '=' || c == '%':
+			mark = true
+		default:
+			return false
+		}
+	}
+	return digit || mark
+}
+
+// lastClause keeps the part of the context after the last sentence break, so
+// an "unsubscribe" earlier in the paragraph does not taint a verify URL.
+func lastClause(s string) string {
+	cut := strings.LastIndexAny(s, "。！？；!?;\n")
+	if j := strings.LastIndex(s, ". "); j > cut {
+		cut = j
+	}
+	if cut >= 0 {
+		_, size := utf8.DecodeRuneInString(s[cut:])
+		return s[cut+size:]
+	}
+	return s
+}
+
 func nodeText(n *html.Node) string {
 	var parts []string
 	var walk func(*html.Node)
@@ -492,6 +800,8 @@ func nodeText(n *html.Node) string {
 			case "img":
 				if alt := htmlAttr(n, "alt"); alt != "" {
 					parts = append(parts, alt)
+				} else if title := htmlAttr(n, "title"); title != "" {
+					parts = append(parts, title)
 				}
 				return
 			}
