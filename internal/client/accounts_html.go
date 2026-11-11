@@ -118,8 +118,9 @@ func parseSidebarPage(r io.Reader) (sidebarPage, error) {
 // parseMessageFolder reads the folder a message sits in from its Move dialog.
 // Every folder of the message's account is listed; the message's own folder
 // is the one row the dialog disables. Other accounts' rows may be disabled
-// for their own reasons, so only the source account's rows count. The name
-// comes from the row too, which saves asking for the folder list.
+// for their own reasons, so only the source account's rows count. The name is
+// the row's visible label: data-mail-move-name is lowercased for searching,
+// which would turn "Trash" into "trash".
 func parseMessageFolder(r io.Reader) (id, name string, err error) {
 	doc, err := html.Parse(r)
 	if err != nil {
@@ -141,7 +142,11 @@ func parseMessageFolder(r io.Reader) (id, name string, err error) {
 	if current == nil {
 		return "", "", errors.New("the move dialog marks no current folder")
 	}
-	return attr(current, "data-mail-move-folder"), attr(current, "data-mail-move-name"), nil
+	name, err = labelText(current)
+	if err != nil {
+		return "", "", fmt.Errorf("folder %s: %w", attr(current, "data-mail-move-folder"), err)
+	}
+	return attr(current, "data-mail-move-folder"), name, nil
 }
 
 // composeAccount is one entry of the composer's From menu: an account, with

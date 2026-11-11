@@ -32,9 +32,14 @@ func TestMessageFolder(t *testing.T) {
 		t.Fatalf("MessageFolder: %v", err)
 	}
 	// The message sits in the source account's Trash; other accounts have a
-	// disabled row too, and those must not be taken for it.
+	// disabled row too, and those must not be taken for it. The name comes
+	// from the visible label: gofer lowercases data-mail-move-name, so
+	// reading the attribute would return "trash".
 	if got.ID != "f-15" || got.Name != "Trash" {
 		t.Errorf("folder = %+v, want f-15 Trash", got)
+	}
+	if !strings.Contains(string(page), `data-mail-move-name="trash"`) {
+		t.Fatal("fixture lost the lowercased attribute, so the case cannot be checked")
 	}
 	if path != "/email/42/move" {
 		t.Errorf("path = %q, want /email/42/move", path)

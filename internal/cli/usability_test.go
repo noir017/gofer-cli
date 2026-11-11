@@ -560,6 +560,31 @@ func TestSearchFolderNameTooBroadFails(t *testing.T) {
 	}
 }
 
+func TestOTPLimitCapsDownloads(t *testing.T) {
+	api := &fakeAPI{sources: map[string][]byte{}}
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("%d", i)
+		api.refs = append(api.refs, model.MessageRef{ID: id})
+		api.sources[id] = []byte(id)
+	}
+	e := newEnv(t, api)
+	e.app.Parse = parseSubjects(e)
+	// The match sits beyond the limit, so finding it would mean reading more
+	// messages than --limit allows.
+	e.app.OTP = func(m *model.Message, _ string) (string, bool) {
+		return "123456", m.Subject == "3"
+	}
+	if code := e.run("otp", "--limit", "3"); code != 2 {
+		t.Fatalf("exit = %d, want 2: the match is past the limit", code)
+	}
+	if got := api.sourceCalls.Load(); got != 3 {
+		t.Fatalf("source reads = %d, want the limit of 3", got)
+	}
+	if got := api.searches[0].Limit; got != fetchLimit(3) {
+		t.Errorf("search limit = %d, want %d, so skipping does not empty the window", got, fetchLimit(3))
+	}
+}
+
 func TestWidenHintDoublesBeyondADay(t *testing.T) {
 	e := newEnv(t, &fakeAPI{})
 	if code := e.run("otp", "--since", "48h"); code != 2 {

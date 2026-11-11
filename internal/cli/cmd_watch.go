@@ -122,6 +122,7 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		delete(skip, id)
 	}
 	checked := make(map[string]bool)
+	limit := f.limitOrDefault()
 	deadline := a.Now().Add(wait)
 	lastSync := a.Now()
 	if wait > 0 {
@@ -133,7 +134,11 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		if err != nil {
 			return "", nil, err
 		}
-		cutoff := a.Now().Add(-since)
+		// Drop the copies that did not arrive and the rows already read,
+		// then stop at --limit: asking for more rows than the limit lets
+		// trash and sent copies be skipped without downloading them, but a
+		// limit of 5 must never mean 105 reads.
+		candidates := make([]model.MessageRef, 0, min(limit, len(refs)))
 		for _, ref := range refs {
 			// A conversation row is kept even when its newest message is a
 			// sent copy: the received mail is still in that conversation.
@@ -143,6 +148,13 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 			if checked[ref.ID] {
 				continue
 			}
+			candidates = append(candidates, ref)
+			if len(candidates) == limit {
+				break
+			}
+		}
+		cutoff := a.Now().Add(-since)
+		for _, ref := range candidates {
 			raw, err := api.Source(ctx, ref.ID)
 			if err != nil {
 				if errors.Is(err, model.ErrNotFound) {
