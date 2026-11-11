@@ -563,6 +563,9 @@ func TestWaitReturnsFirstNewMessage(t *testing.T) {
 	if !strings.Contains(e.out.String(), "Subject: b") {
 		t.Fatalf("stdout = %q, want the new message", e.out.String())
 	}
+	if got := api.searches[0].Limit; got != 200 {
+		t.Fatalf("wait limit = %d, want 200", got)
+	}
 }
 
 func TestWaitTimesOut(t *testing.T) {
@@ -972,8 +975,8 @@ func TestMoveAmbiguousFolderName(t *testing.T) {
 	if code := e.run("move", "5", "--folder", "Archive"); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if got := e.errOut.String(); !strings.Contains(got, "f-a") || !strings.Contains(got, "f-b") {
-		t.Fatalf("stderr = %q, want the candidate ids", got)
+	if got := e.errOut.String(); !strings.Contains(got, "f-a") || !strings.Contains(got, "f-b") || !strings.Contains(got, "--account") {
+		t.Fatalf("stderr = %q, want the candidate ids and the --account hint", got)
 	}
 }
 
@@ -1004,11 +1007,173 @@ func TestOTPSearchWindow(t *testing.T) {
 		t.Fatalf("exit = %d, want 2", code)
 	}
 	opts := api.searches[0]
-	if opts.Limit != 200 {
-		t.Errorf("limit = %d, want 200", opts.Limit)
+	if opts.Limit != 50 {
+		t.Errorf("limit = %d, want 50", opts.Limit)
 	}
 	want := e.clock.t.Add(-10 * time.Minute).Format("2006-01-02")
 	if opts.After != want {
 		t.Errorf("after = %q, want %q", opts.After, want)
+	}
+}
+
+func TestMoveUniqueNameSkipsAccountSearch(t *testing.T) {
+	api := &fakeAPI{folders: []model.Folder{{ID: "f-a", AccountID: "acc-1", Name: "Archive"}}}
+	e := newEnv(t, api)
+	if code := e.run("move", "5", "--folder", "Archive"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if len(api.moves) != 1 || api.moves[0].folder != "f-a" {
+		t.Fatalf("moves = %+v", api.moves)
+	}
+	if len(api.searches) != 0 {
+		t.Fatalf("searches = %d, want none for a unique folder name", len(api.searches))
+	}
+}
+
+func TestMoveAccountFlagScopesName(t *testing.T) {
+	api := &fakeAPI{
+		folders: []model.Folder{
+			{ID: "f-a", AccountID: "acc-1", Name: "Archive"},
+			{ID: "f-b", AccountID: "acc-2", Name: "Archive"},
+		},
+		accounts: []model.Account{{ID: "acc-1", Email: "me@example.com"}},
+	}
+	e := newEnv(t, api)
+	if code := e.run("move", "5", "--folder", "Archive", "--account", "me@example.com"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if len(api.moves) != 1 || api.moves[0].folder != "f-a" {
+		t.Fatalf("moves = %+v, want f-a", api.moves)
+	}
+	if len(api.searches) != 0 {
+		t.Fatalf("searches = %d, want none when --account is given", len(api.searches))
+	}
+}
+
+func TestListFailsWhenNothingOutput(t *testing.T) {
+	api := &fakeAPI{
+		refs:      []model.MessageRef{{ID: "1"}},
+		sources:   map[string][]byte{},
+		sourceErr: errors.New("connection reset"),
+	}
+	e := newEnv(t, api)
+	if code := e.run("list"); code != 1 {
+		t.Fatalf("exit = %d, want 1 when no message could be read", code)
+	}
+	if got := e.errOut.String(); !strings.Contains(got, "skipping message 1") || !strings.Contains(got, "gofer-cli: ") {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestOTPRetriesUnparseableMessage(t *testing.T) {
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "7"}},
+		sources: map[string][]byte{"7": []byte("7")},
+	}
+	e := newEnv(t, api)
+	parses := 0
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		parses++
+		if parses == 1 {
+			return nil, errors.New("malformed")
+		}
+		return &model.Message{Date: e.clock.t}, nil
+	}
+	e.app.OTP = func(*model.Message, string) (string, bool) { return "5150", true }
+	if code := e.run("otp", "--wait", "5"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "5150\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+	if api.sourceCalls.Load() != 2 {
+		t.Fatalf("source calls = %d, want 2: a message that failed to parse is retried", api.sourceCalls.Load())
+	}
+}
+
+// flakySourceAPI fails the first Source calls with a temporary error.
+type flakySourceAPI struct {
+	*seqAPI
+	fails int
+}
+
+func (f *flakySourceAPI) Source(ctx context.Context, id string) ([]byte, error) {
+	if f.fails > 0 {
+		f.fails--
+		return nil, errors.New("temporary read error")
+	}
+	return f.seqAPI.fakeAPI.Source(ctx, id)
+}
+
+func TestWaitRetriesSourceError(t *testing.T) {
+	api := &flakySourceAPI{
+		seqAPI: &seqAPI{
+			fakeAPI: &fakeAPI{sources: map[string][]byte{"b": []byte("b")}},
+			seq:     [][]model.MessageRef{{}, {{ID: "b"}}},
+		},
+		fails: 1,
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Subject: string(raw)}, nil
+	}
+	if code := e.run("wait", "--timeout", "10"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if !strings.Contains(e.out.String(), "Subject: b") {
+		t.Fatalf("stdout = %q", e.out.String())
+	}
+	if !strings.Contains(e.errOut.String(), "reading message b") {
+		t.Fatalf("stderr = %q, want a retry line", e.errOut.String())
+	}
+}
+
+func TestSaveFallbackNameUsesParsedIndex(t *testing.T) {
+	api := &fakeAPI{sources: map[string][]byte{"9": []byte("raw")}}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{Attachments: []model.Attachment{{Index: 2, Filename: ""}}}, nil
+	}
+	e.app.AttachmentData = func(_ []byte, _ int) (model.Attachment, []byte, error) {
+		return model.Attachment{Index: 99, Filename: ""}, []byte("data"), nil
+	}
+	dir := t.TempDir()
+	if code := e.run("save", "9", "-o", dir); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	want := filepath.Join(dir, "attachment-2") + "\n"
+	if got := e.out.String(); got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestReplyAllFailsWhenAccountsFail(t *testing.T) {
+	api := &fakeAPI{
+		sources:     map[string][]byte{"9": []byte("9")},
+		accountsErr: errors.New("accounts unavailable"),
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{From: []model.Address{{Email: "alice@example.com"}}}, nil
+	}
+	if code := e.run("reply", "9", "--all", "--body", "thanks"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if len(api.sends) != 0 {
+		t.Fatalf("sends = %d, want none when the account list fails", len(api.sends))
+	}
+}
+
+func TestSendAndReplyUseShowsOptionalFrom(t *testing.T) {
+	e := newEnv(t, &fakeAPI{})
+	root := e.app.root()
+	for _, name := range []string{"send", "reply"} {
+		cmd, _, err := root.Find([]string{name})
+		if err != nil {
+			t.Fatalf("find %s: %v", name, err)
+		}
+		if !strings.Contains(cmd.Use, "[--from") {
+			t.Errorf("%s Use = %q, want [--from ...]", name, cmd.Use)
+		}
 	}
 }

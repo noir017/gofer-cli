@@ -68,12 +68,21 @@ func (a *App) fetchAll(ctx context.Context, api API, refs []model.MessageRef) ([
 	wg.Wait()
 
 	out := make([]model.Message, 0, len(refs))
+	var firstErr error
 	for i := range refs {
 		if errs[i] != nil {
 			fmt.Fprintf(a.Stderr, "gofer-cli: skipping message %s: %v\n", refs[i].ID, errs[i])
+			if firstErr == nil {
+				firstErr = errs[i]
+			}
 			continue
 		}
 		out = append(out, msgs[i])
+	}
+	if len(out) == 0 && firstErr != nil {
+		// Nothing could be shown: report the failure instead of an empty
+		// listing that looks like a search without hits.
+		return nil, firstErr
 	}
 	return out, nil
 }

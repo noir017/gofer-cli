@@ -71,7 +71,7 @@ func (a *App) actionCommand(use, short, example string, action client.Action) *c
 }
 
 func (a *App) moveCommand() *cobra.Command {
-	var folder string
+	var folder, account string
 	cmd := &cobra.Command{
 		Use:     "move <id>... --folder NAME",
 		Short:   "Move messages to a folder",
@@ -89,7 +89,7 @@ func (a *App) moveCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			folderID, err := a.resolveFolder(cmd.Context(), api, folder, ids)
+			folderID, err := a.resolveFolder(cmd.Context(), api, folder, ids, account)
 			if err != nil {
 				return err
 			}
@@ -100,14 +100,14 @@ func (a *App) moveCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&folder, "folder", "", "folder name or id")
+	cmd.Flags().StringVar(&account, "account", "", "account the messages belong to, by email or id")
 	return cmd
 }
 
-// resolveFolder turns --folder into a folder id. An id is taken as is; a name
-// is looked up in the account the messages belong to, so two accounts with an
-// Archive folder cannot be confused. A name that still matches more than one
-// folder is refused: the caller has to pass the id.
-func (a *App) resolveFolder(ctx context.Context, api API, ref string, ids []string) (string, error) {
+// resolveFolder turns --folder into a folder id. An id is taken as is. A name
+// that matches one folder is used at once; when several accounts have such a
+// folder, the account of the messages decides, and --account overrides that.
+func (a *App) resolveFolder(ctx context.Context, api API, ref string, ids []string, account string) (string, error) {
 	folders, err := api.Folders(ctx, "")
 	if err != nil {
 		return "", err
@@ -117,10 +117,47 @@ func (a *App) resolveFolder(ctx context.Context, api API, ref string, ids []stri
 			return f.ID, nil
 		}
 	}
-	accountID, err := a.accountForIDs(ctx, api, ids)
-	if err != nil {
-		return "", err
+
+	scope := ""
+	if account != "" {
+		if scope, err = a.resolveAccount(ctx, api, account); err != nil {
+			return "", err
+		}
 	}
+	matches := foldersNamed(folders, ref, scope)
+	if len(matches) == 1 {
+		return matches[0].ID, nil
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("%w: folder %s", model.ErrNotFound, ref)
+	}
+
+	// Several folders share the name: narrow them down to the account of the
+	// messages unless --account already did.
+	if scope == "" {
+		if scope, err = a.accountForIDs(ctx, api, ids); err != nil {
+			return "", err
+		}
+	}
+	if scope == "" {
+		return "", fmt.Errorf("folder name %q matches %d folders; use the folder id or --account (%s)",
+			ref, len(matches), folderIDs(matches))
+	}
+	matches = foldersNamed(folders, ref, scope)
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("%w: folder %s in account %s", model.ErrNotFound, ref, scope)
+	case 1:
+		return matches[0].ID, nil
+	default:
+		return "", fmt.Errorf("folder name %q matches %d folders in account %s; use one of these ids: %s",
+			ref, len(matches), scope, folderIDs(matches))
+	}
+}
+
+// foldersNamed returns the folders called ref, limited to accountID when it is
+// not empty.
+func foldersNamed(folders []model.Folder, ref, accountID string) []model.Folder {
 	matches := make([]model.Folder, 0, 2)
 	for _, f := range folders {
 		if accountID != "" && f.AccountID != accountID {
@@ -130,18 +167,15 @@ func (a *App) resolveFolder(ctx context.Context, api API, ref string, ids []stri
 			matches = append(matches, f)
 		}
 	}
-	switch len(matches) {
-	case 0:
-		return "", fmt.Errorf("%w: folder %s", model.ErrNotFound, ref)
-	case 1:
-		return matches[0].ID, nil
-	default:
-		candidates := make([]string, 0, len(matches))
-		for _, f := range matches {
-			candidates = append(candidates, f.ID)
-		}
-		return "", fmt.Errorf("folder name %q matches %d folders; use one of these ids: %s", ref, len(matches), strings.Join(candidates, ", "))
+	return matches
+}
+
+func folderIDs(folders []model.Folder) string {
+	ids := make([]string, 0, len(folders))
+	for _, f := range folders {
+		ids = append(ids, f.ID)
 	}
+	return strings.Join(ids, ", ")
 }
 
 func (a *App) accountsCommand() *cobra.Command {

@@ -14,7 +14,8 @@ import (
 const (
 	pollInterval = 3 * time.Second
 	syncInterval = 15 * time.Second
-	watchLimit   = 200 // otp, link and wait look further back than list
+	findLimit    = 50  // otp and link look further back than list
+	waitLimit    = 200 // wait may sit for minutes, so it looks further
 	dateFormat   = "2006-01-02"
 )
 
@@ -27,7 +28,7 @@ type findFlags struct {
 }
 
 func (f *findFlags) register(cmd *cobra.Command) {
-	f.filterFlags.registerLimit(cmd, watchLimit)
+	f.filterFlags.registerLimit(cmd, findLimit)
 	cmd.Flags().DurationVar(&f.since, "since", 10*time.Minute, "only messages newer than this")
 	cmd.Flags().IntVar(&f.wait, "wait", 0, "keep looking for this many seconds")
 }
@@ -115,11 +116,11 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 				}
 				return "", nil, err
 			}
-			checked[ref.ID] = true
 			m, err := a.Parse(raw)
 			if err != nil {
-				continue
+				continue // not marked as checked: retried on the next poll
 			}
+			checked[ref.ID] = true
 			m.ID = ref.ID
 			if m.Account == "" {
 				m.Account = ref.Account
@@ -213,13 +214,14 @@ func (a *App) waitCommand() *cobra.Command {
 						if errors.Is(err, model.ErrNotFound) {
 							continue
 						}
-						return err
+						fmt.Fprintf(a.Stderr, "gofer-cli: reading message %s: %v\n", ref.ID, err)
+						continue // try again on the next round
 					}
-					checked[ref.ID] = true
 					m, err := a.Parse(raw)
 					if err != nil {
 						continue
 					}
+					checked[ref.ID] = true
 					m.ID = ref.ID
 					if m.Account == "" {
 						m.Account = ref.Account
@@ -234,7 +236,7 @@ func (a *App) waitCommand() *cobra.Command {
 			return fmt.Errorf("%w: no new message within %s", model.ErrNotFound, time.Duration(timeout)*time.Second)
 		},
 	}
-	f.registerLimit(cmd, watchLimit)
+	f.registerLimit(cmd, waitLimit)
 	cmd.Flags().IntVar(&timeout, "timeout", 120, "give up after this many seconds")
 	return cmd
 }

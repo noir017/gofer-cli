@@ -20,7 +20,7 @@ func (a *App) sendCommand() *cobra.Command {
 		to, cc, bcc, attach           []string
 	)
 	cmd := &cobra.Command{
-		Use:     "send --from A --to B[,C] --subject S",
+		Use:     "send [--from A] --to B[,C] --subject S",
 		Short:   "Send a message",
 		Example: "  gofer-cli send --from me@example.com --to ana@example.com --subject Hi --body 'hello'",
 		Args:    cobra.NoArgs,
@@ -75,7 +75,7 @@ func (a *App) replyCommand() *cobra.Command {
 		attach         []string
 	)
 	cmd := &cobra.Command{
-		Use:     "reply <id>",
+		Use:     "reply <id> [--from A]",
 		Short:   "Reply to a message",
 		Example: "  gofer-cli reply 42 --all --body 'thanks'",
 		Args:    cobra.ExactArgs(1),
@@ -101,7 +101,11 @@ func (a *App) replyCommand() *cobra.Command {
 			}
 			var cc []string
 			if all {
-				cc = without(append(emails(m.To), emails(m.Cc)...), append(to, a.ownAddresses(ctx, api)...))
+				own, err := a.ownAddresses(ctx, api)
+				if err != nil {
+					return err
+				}
+				cc = without(append(emails(m.To), emails(m.Cc)...), append(to, own...))
 			}
 			text, err := a.bodyText(body, bodyFile)
 			if err != nil {
@@ -143,10 +147,10 @@ func exclusiveBody(cmd *cobra.Command) error {
 
 // ownAddresses lists the addresses of every configured account, so a reply
 // all does not cc the user.
-func (a *App) ownAddresses(ctx context.Context, api API) []string {
+func (a *App) ownAddresses(ctx context.Context, api API) ([]string, error) {
 	accounts, err := api.Accounts(ctx)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := make([]string, 0, len(accounts))
 	for _, acc := range accounts {
@@ -154,7 +158,7 @@ func (a *App) ownAddresses(ctx context.Context, api API) []string {
 			out = append(out, acc.Email)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // bodyText takes the body from --body, then --body-file, then stdin when

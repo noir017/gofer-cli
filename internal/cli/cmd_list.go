@@ -153,7 +153,7 @@ func (a *App) saveCommand() *cobra.Command {
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					return err
 				}
-				target := freePath(dir, safeFilename(got.Filename, got.Index))
+				target := freePath(dir, safeFilename(got.Filename, att.Index))
 				if err := os.WriteFile(target, data, 0o644); err != nil {
 					return err
 				}

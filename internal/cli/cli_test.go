@@ -33,11 +33,12 @@ type fakeAPI struct {
 	folders  []model.Folder
 	info     model.ServerInfo
 
-	searchErr error
-	sourceErr error
-	infoErr   error
-	loginErr  error
-	sendErr   error
+	searchErr   error
+	sourceErr   error
+	accountsErr error
+	infoErr     error
+	loginErr    error
+	sendErr     error
 
 	searches    []client.SearchOptions
 	syncs       []string
@@ -88,7 +89,9 @@ func (f *fakeAPI) Sync(_ context.Context, accountID string) error {
 	return nil
 }
 
-func (f *fakeAPI) Accounts(context.Context) ([]model.Account, error) { return f.accounts, nil }
+func (f *fakeAPI) Accounts(context.Context) ([]model.Account, error) {
+	return f.accounts, f.accountsErr
+}
 
 func (f *fakeAPI) Folders(context.Context, string) ([]model.Folder, error) { return f.folders, nil }
 
