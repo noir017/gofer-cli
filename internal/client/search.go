@@ -1,14 +1,18 @@
 package client
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"unicode"
 )
 
 // searchFilters is the parameter set gofer's search page builds from its
-// search box (assets/js/app.js applyKeywordToken in gofer). The server only
-// full-text searches q, so key:value tokens must become their own parameters.
+// search box (assets/js/app.js applyKeywordToken in gofer). Gofer full-text
+// searches q alone, so the keywords this client supports become their own
+// request parameters. Unknown keywords stay in q; known ones this client does
+// not implement are rejected, since searching for them as text would almost
+// always find nothing.
 type searchFilters struct {
 	query           string
 	from            string
@@ -27,19 +31,38 @@ type searchFilters struct {
 
 // parseSearchQuery splits the key:value tokens out of query. Tokens it does
 // not understand stay in the full-text query, as they do in the web UI.
-func parseSearchQuery(query string) searchFilters {
+func parseSearchQuery(query string) (searchFilters, error) {
 	var filters searchFilters
 	var plain []string
 	for _, token := range splitSearchTokens(query) {
 		if idx := strings.IndexByte(token, ':'); idx > 0 {
-			if filters.apply(token[:idx], token[idx+1:]) {
+			key, value := token[:idx], token[idx+1:]
+			if err := unsupportedSearchKeyword(key); err != nil {
+				return filters, err
+			}
+			if filters.apply(key, value) {
 				continue
 			}
 		}
 		plain = append(plain, token)
 	}
 	filters.query = strings.Join(plain, " ")
-	return filters
+	return filters, nil
+}
+
+// unsupportedSearchKeyword names the search-box keywords this client does not
+// translate yet. account: points at the flag that replaces it.
+func unsupportedSearchKeyword(key string) error {
+	key = strings.ToLower(strings.ReplaceAll(key, "_", "-"))
+	switch key {
+	case "account":
+		return fmt.Errorf("search: unsupported keyword %q; use --account instead", key+":")
+	case "tag", "attachment", "filetype", "larger", "smaller",
+		"has", "no", "recipient", "recipients", "participant", "contact",
+		"q", "query", "text":
+		return fmt.Errorf("search: unsupported keyword %q", key+":")
+	}
+	return nil
 }
 
 func (f *searchFilters) apply(key, value string) bool {

@@ -89,7 +89,10 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 
 	// The search box's key:value tokens become request parameters; explicit
 	// fields win over tokens for the same filter.
-	filters := parseSearchQuery(opts.Query)
+	filters, err := parseSearchQuery(opts.Query)
+	if err != nil {
+		return nil, err
+	}
 	if value := strings.TrimSpace(opts.From); value != "" {
 		filters.from = value
 	}

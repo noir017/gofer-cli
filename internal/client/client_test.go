@@ -599,7 +599,7 @@ func TestSearchQueryTokens(t *testing.T) {
 	}
 
 	// An unknown token stays in the full-text query.
-	refs, err = c.Search(ctx, SearchOptions{Query: `from:alice account:acc1 hello`})
+	refs, err = c.Search(ctx, SearchOptions{Query: `from:alice foo:bar hello`})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -607,7 +607,7 @@ func TestSearchQueryTokens(t *testing.T) {
 		t.Errorf("ids = %v, want [42 41]", got)
 	}
 	q = f.query()
-	if q.Get("q") != "account:acc1 hello" {
+	if q.Get("q") != "foo:bar hello" {
 		t.Errorf("q = %q, want the unknown token kept", q.Get("q"))
 	}
 
@@ -618,6 +618,40 @@ func TestSearchQueryTokens(t *testing.T) {
 	q = f.query()
 	if q.Get("to") != "bob@example.com" || q.Get("recipient_type") != "to" {
 		t.Errorf("parameters = %v, want the explicit To", q)
+	}
+}
+
+func TestSearchUnsupportedKeyword(t *testing.T) {
+	f := newFakeGofer()
+	c := clientFor(t, newFakeServer(t, f), f, "")
+	ctx := context.Background()
+
+	for _, query := range []string{
+		`account:acc1`, `tag:work`, `attachment:pdf`, `filetype:pdf`,
+		`larger:1m`, `smaller:10k`, `has:attachment`, `no:tag`,
+		`recipient:bob@example.com`, `recipients:bob@example.com`,
+		`participant:alice`, `contact:alice`, `q:hello`, `query:hello`, `text:hello`,
+	} {
+		_, err := c.Search(ctx, SearchOptions{Query: query})
+		if err == nil {
+			t.Errorf("Search(%q) returned no error", query)
+			continue
+		}
+		if !strings.Contains(err.Error(), "unsupported") {
+			t.Errorf("Search(%q) error = %v, want it to say unsupported", query, err)
+		}
+	}
+
+	if _, err := c.Search(ctx, SearchOptions{Query: `account:acc1`}); err == nil || !strings.Contains(err.Error(), "--account") {
+		t.Errorf("account: error = %v, want a --account hint", err)
+	}
+
+	// A key that is not a gofer keyword stays in the full-text query.
+	if _, err := c.Search(ctx, SearchOptions{Query: `http://example.com`}); err != nil {
+		t.Fatalf("Search with an unknown key: %v", err)
+	}
+	if got := f.query().Get("q"); got != "http://example.com" {
+		t.Errorf("q = %q, want the token kept", got)
 	}
 }
 
