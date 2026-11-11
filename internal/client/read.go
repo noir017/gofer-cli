@@ -66,7 +66,13 @@ func (c *Client) serverVersion(ctx context.Context) (string, error) {
 }
 
 type SearchOptions struct {
-	Query     string // gofer search syntax: to: from: subject: account: after: ...
+	Query     string // free text plus key:value tokens, as in gofer's search box
+	From      string // sender name or address
+	To        string // To recipients only; cc: and bcc: come from Query
+	Subject   string
+	Body      string
+	After     string // YYYY-MM-DD
+	Before    string // YYYY-MM-DD
 	AccountID string // "" = all accounts
 	Unread    bool
 	Limit     int // 0 = 20
@@ -80,15 +86,33 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 	if limit <= 0 {
 		limit = 20
 	}
-	query := url.Values{
-		"q": {opts.Query},
-		// Pin the order: the web UI otherwise uses the user's saved sort.
-		"sort_by":    {"date"},
-		"sort_order": {"desc"},
+
+	// The search box's key:value tokens become request parameters; explicit
+	// fields win over tokens for the same filter.
+	filters := parseSearchQuery(opts.Query)
+	if value := strings.TrimSpace(opts.From); value != "" {
+		filters.from = value
+	}
+	if value := strings.TrimSpace(opts.To); value != "" {
+		filters.to = value
+		filters.recipientType = "to"
+	}
+	if value := strings.TrimSpace(opts.Subject); value != "" {
+		filters.subject = value
+	}
+	if value := strings.TrimSpace(opts.Body); value != "" {
+		filters.body = value
+	}
+	if value := strings.TrimSpace(opts.After); value != "" {
+		filters.after = value
+	}
+	if value := strings.TrimSpace(opts.Before); value != "" {
+		filters.before = value
 	}
 	if opts.Unread {
-		query.Set("unread", "1")
+		filters.unread = true
 	}
+	query := filters.params()
 	if opts.AccountID != "" {
 		query.Set("scope", "account")
 		query.Set("scope_account_id", opts.AccountID)

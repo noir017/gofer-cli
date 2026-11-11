@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +22,22 @@ import (
 )
 
 const testTOTPSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+
+type fakeMail struct {
+	ID      string
+	Account string
+	Folder  string
+	From    string
+	To      []string
+	Cc      []string
+	Bcc     []string
+	Subject string
+	Body    string
+	Date    string
+	Unread  bool
+	Starred bool
+	Thread  bool
+}
 
 type fakeGofer struct {
 	mu sync.Mutex
@@ -42,6 +59,7 @@ type fakeGofer struct {
 	logout    bool
 	csrfSeen  string
 	sources   map[string]string
+	mails     []fakeMail
 }
 
 func newFakeGofer() *fakeGofer {
@@ -54,6 +72,23 @@ func newFakeGofer() *fakeGofer {
 		sources: map[string]string{
 			"42":  "From: sender@example.com\r\nSubject: hello\r\n\r\nbody text\r\n",
 			"4 2": "From: sender@example.com\r\nSubject: escaped id\r\n\r\nbody text\r\n",
+		},
+		mails: []fakeMail{
+			{
+				ID: "42", Account: "acc1", Folder: "f1", From: "alice@example.com",
+				To: []string{"bob@example.com"}, Subject: "hello world", Body: "body text",
+				Date: "2026-11-10", Unread: true,
+			},
+			{
+				ID: "43", Account: "acc1", Folder: "f1", From: "carol@example.com",
+				To: []string{"bob@example.com"}, Cc: []string{"dave@example.com"},
+				Subject: "project update", Body: "agenda", Date: "2026-11-09", Thread: true,
+			},
+			{
+				ID: "41", Account: "acc2", Folder: "f2", From: "alice@example.com",
+				To: []string{"erin@example.com"}, Subject: "invoice", Body: "attached",
+				Date: "2026-11-08", Starred: true,
+			},
 		},
 	}
 }
@@ -161,26 +196,91 @@ func (f *fakeGofer) handleSearch(w http.ResponseWriter, r *http.Request) {
 		f.reject(w, r)
 		return
 	}
+	query := r.URL.Query()
 	f.mu.Lock()
-	f.lastQuery = r.URL.Query()
+	f.lastQuery = query
+	mails := append([]fakeMail(nil), f.mails...)
 	f.mu.Unlock()
-	if r.URL.Query().Get("scope_account_id") == "gone" {
+
+	if query.Get("scope_account_id") == "gone" {
 		http.NotFound(w, r)
 		return
 	}
 
-	ids := []map[string]any{
-		{"id": "42", "thread": false, "account": "acc1", "folder_id": "f1"},
-		{"id": "43", "thread": true, "account": "acc1", "folder_id": "f1"},
-		{"id": "41", "thread": false, "account": "acc2", "folder_id": "f2"},
-	}
-	if r.URL.Query().Get("unread") == "1" {
-		ids = ids[:1]
+	// Like gofer's parameter filters, and deliberately blind to q.
+	ids := make([]map[string]any, 0, len(mails))
+	for _, mail := range mails {
+		if !matchesSearch(mail, query) {
+			continue
+		}
+		ids = append(ids, map[string]any{
+			"id": mail.ID, "thread": mail.Thread, "account": mail.Account, "folder_id": mail.Folder,
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ids": ids, "total": len(ids), "truncated": false,
 	})
+}
+
+func matchesSearch(mail fakeMail, query url.Values) bool {
+	if account := query.Get("scope_account_id"); account != "" && mail.Account != account {
+		return false
+	}
+	if from := query.Get("from"); from != "" && !containsFold(mail.From, from) {
+		return false
+	}
+	if to := query.Get("to"); to != "" && !matchesRecipient(mail, to, query.Get("recipient_type")) {
+		return false
+	}
+	if subject := query.Get("subject"); subject != "" && !containsFold(mail.Subject, subject) {
+		return false
+	}
+	if body := query.Get("body"); body != "" && !containsFold(mail.Body, body) {
+		return false
+	}
+	if after := query.Get("after_date"); after != "" && mail.Date < after {
+		return false
+	}
+	if before := query.Get("before_date"); before != "" && mail.Date > before {
+		return false
+	}
+	if query.Get("unread") == "1" && !mail.Unread {
+		return false
+	}
+	if query.Get("read") == "1" && mail.Unread {
+		return false
+	}
+	if query.Get("starred") == "1" && !mail.Starred {
+		return false
+	}
+	return true
+}
+
+func matchesRecipient(mail fakeMail, want, kind string) bool {
+	lists := []struct {
+		kind      string
+		addresses []string
+	}{
+		{"to", mail.To},
+		{"cc", mail.Cc},
+		{"bcc", mail.Bcc},
+	}
+	for _, list := range lists {
+		if kind != "" && list.kind != kind {
+			continue
+		}
+		for _, address := range list.addresses {
+			if containsFold(address, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsFold(haystack, needle string) bool {
+	return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
 }
 
 func (f *fakeGofer) handleSource(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +499,125 @@ func TestSource(t *testing.T) {
 	}
 	if string(escaped) != f.sourceBody("4 2") {
 		t.Errorf("source = %q", escaped)
+	}
+}
+
+func refIDs(refs []model.MessageRef) []string {
+	ids := make([]string, len(refs))
+	for i, ref := range refs {
+		ids[i] = ref.ID
+	}
+	return ids
+}
+
+func TestSearchFields(t *testing.T) {
+	f := newFakeGofer()
+	c := clientFor(t, newFakeServer(t, f), f, "")
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		opts SearchOptions
+		want []string
+	}{
+		{"to", SearchOptions{To: "bob@example.com"}, []string{"42", "43"}},
+		{"to nobody", SearchOptions{To: "nobody@example.com"}, nil},
+		{"from", SearchOptions{From: "alice"}, []string{"42", "41"}},
+		{"subject", SearchOptions{Subject: "invoice"}, []string{"41"}},
+		{"body", SearchOptions{Body: "agenda"}, []string{"43"}},
+		{"after", SearchOptions{After: "2026-11-09"}, []string{"42", "43"}},
+		{"before", SearchOptions{Before: "2026-11-09"}, []string{"43", "41"}},
+		{"unread", SearchOptions{Unread: true}, []string{"42"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			refs, err := c.Search(ctx, tc.opts)
+			if err != nil {
+				t.Fatalf("Search: %v", err)
+			}
+			if got := refIDs(refs); !slices.Equal(got, tc.want) {
+				t.Errorf("ids = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// To is the To recipients only: dave is a Cc.
+	refs, err := c.Search(ctx, SearchOptions{To: "dave@example.com"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("To:dave matched %v, want nothing", refIDs(refs))
+	}
+	if got := f.query().Get("recipient_type"); got != "to" {
+		t.Errorf("recipient_type = %q, want to", got)
+	}
+}
+
+func TestSearchQueryTokens(t *testing.T) {
+	f := newFakeGofer()
+	c := clientFor(t, newFakeServer(t, f), f, "")
+	ctx := context.Background()
+
+	refs, err := c.Search(ctx, SearchOptions{Query: `from:alice subject:"invoice" is:starred`})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := refIDs(refs); !slices.Equal(got, []string{"41"}) {
+		t.Errorf("ids = %v, want [41]", got)
+	}
+	q := f.query()
+	if q.Get("from") != "alice" || q.Get("subject") != "invoice" || q.Get("starred") != "1" {
+		t.Errorf("parameters = %v", q)
+	}
+	if q.Get("q") != "" {
+		t.Errorf("q = %q, want the tokens removed", q.Get("q"))
+	}
+
+	refs, err = c.Search(ctx, SearchOptions{Query: `cc:dave@example.com`})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := refIDs(refs); !slices.Equal(got, []string{"43"}) {
+		t.Errorf("ids = %v, want [43]", got)
+	}
+	q = f.query()
+	if q.Get("to") != "dave@example.com" || q.Get("recipient_type") != "cc" {
+		t.Errorf("parameters = %v", q)
+	}
+
+	refs, err = c.Search(ctx, SearchOptions{Query: `after:2026-11-09 before:2026-11-09`})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := refIDs(refs); !slices.Equal(got, []string{"43"}) {
+		t.Errorf("ids = %v, want [43]", got)
+	}
+	q = f.query()
+	if q.Get("after_date") != "2026-11-09" || q.Get("before_date") != "2026-11-09" {
+		t.Errorf("parameters = %v", q)
+	}
+
+	// An unknown token stays in the full-text query.
+	refs, err = c.Search(ctx, SearchOptions{Query: `from:alice account:acc1 hello`})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := refIDs(refs); !slices.Equal(got, []string{"42", "41"}) {
+		t.Errorf("ids = %v, want [42 41]", got)
+	}
+	q = f.query()
+	if q.Get("q") != "account:acc1 hello" {
+		t.Errorf("q = %q, want the unknown token kept", q.Get("q"))
+	}
+
+	// An explicit field wins over the same token in Query.
+	if _, err := c.Search(ctx, SearchOptions{Query: `to:erin@example.com`, To: "bob@example.com"}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	q = f.query()
+	if q.Get("to") != "bob@example.com" || q.Get("recipient_type") != "to" {
+		t.Errorf("parameters = %v, want the explicit To", q)
 	}
 }
 
