@@ -78,7 +78,7 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 | `save <id> [--index N] [-o 目录]` | 下载附件，输出写入的路径 |
 | `mark read\|unread\|star\|unstar <id>... \| -` | 改邮件标记；`-` 从 stdin 读 id |
 | `archive \| spam \| delete <id>... \| -` | 移到归档、垃圾邮件或回收站 |
-| `move <id>... --folder 名称或ID` | 移到指定文件夹 |
+| `move <id>... --folder 名称或ID [--account 邮箱]` | 移到指定文件夹 |
 | `send --to A[,A] [--from 账号] [--subject S] [--cc A[,A]] [--bcc A[,A]] [--body 文本 \| --body-file 文件 \| 标准输入] [--attach 文件]...` | 发信；只有 `--to` 必填 |
 | `reply <id> [--all] [--body 文本 \| --body-file 文件 \| 标准输入] [--attach 文件]...` | 回复；不给 `--from` 时用原邮件所在的账号 |
 | `accounts` | 列出账号 |
@@ -88,7 +88,7 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 | `doctor` | 检查配置和连通性 |
 | `version` | 输出版本 |
 
-`list`、`latest`、`otp`、`link`、`wait` 共用一套过滤参数。`--to`、`--from`、`--subject` 是各自独立的筛选条件；`-q` 里可以用和 Gofer 搜索框一样的写法：`from:`、`to:`、`subject:`、`body:`、`after:`、`before:`、`is:unread` 等。
+`list`、`latest`、`otp`、`link`、`wait` 共用一套过滤参数。`--to`、`--from`、`--subject` 是各自独立的筛选条件；`-q` 里可以用和 Gofer 搜索框一样的写法：`from:`、`to:`、`subject:`、`body:`、`after:`、`before:`、`is:unread` 等。本工具翻译不了的关键字（如 `tag:`、`attachment:`、`larger:`）会直接报错，不会当成普通文本去搜。
 
 `delete` 只把邮件移到回收站，不永久删除。
 
@@ -128,14 +128,14 @@ gofer-cli list --unread --limit 100 | gofer-cli mark read -
 | --- | --- |
 | 0 | 成功 |
 | 1 | 出错 |
-| 2 | 没有匹配或等待超时（`latest`、`otp`、`link`、`wait`）；id 不存在（`read`、`save`）；`--account` 或 `--folder` 指定的对象不存在 |
+| 2 | 没有匹配或等待超时（`latest`、`otp`、`link`、`wait`）；id 不存在（`read`、`attachments`、`save`、`mark`、`archive`、`delete`、`move`）；`--account` 或 `--folder` 指定的对象不存在 |
 | 3 | 登录或配置问题 |
 
 `list`、`accounts`、`folders` 结果为空时退出码是 0。
 
 ## 兼容性
 
-面向 Gofer v0.23.0。Gofer 尚未到 1.0，版本之间会变；其他版本未必不能用，但升级服务器后先跑 `gofer-cli doctor`。
+已在 Gofer v0.23.0 上实测。Gofer 尚未到 1.0，版本之间会变；其他版本未必不能用，但升级服务器后先跑 `gofer-cli doctor`。
 
 ## 已知限制
 

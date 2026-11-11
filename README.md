@@ -78,7 +78,7 @@ Global flags: `--url`, `--user`, `--config`, `--json`. Every command accepts `--
 | `save <id> [--index N] [-o dir]` | Download attachments and print the paths written |
 | `mark read\|unread\|star\|unstar <id>... \| -` | Change message flags; `-` reads ids from stdin |
 | `archive \| spam \| delete <id>... \| -` | Move messages to archive, spam or Trash |
-| `move <id>... --folder name-or-id` | Move messages to a folder |
+| `move <id>... --folder name-or-id [--account EMAIL]` | Move messages to a folder |
 | `send --to A[,A] [--from account] [--subject S] [--cc A[,A]] [--bcc A[,A]] [--body text \| --body-file file \| stdin] [--attach file]...` | Send a message; only `--to` is required |
 | `reply <id> [--all] [--body text \| --body-file file \| stdin] [--attach file]...` | Reply; without `--from`, from the account the original message arrived on |
 | `accounts` | List accounts |
@@ -88,7 +88,7 @@ Global flags: `--url`, `--user`, `--config`, `--json`. Every command accepts `--
 | `doctor` | Check configuration and connectivity |
 | `version` | Print the version |
 
-`list`, `latest`, `otp`, `link` and `wait` share the same filters. `--to`, `--from` and `--subject` are independent filters. `-q` takes the same syntax as Gofer's search box: `from:`, `to:`, `subject:`, `body:`, `after:`, `before:`, `is:unread` and so on.
+`list`, `latest`, `otp`, `link` and `wait` share the same filters. `--to`, `--from` and `--subject` are independent filters. `-q` takes the same syntax as Gofer's search box: `from:`, `to:`, `subject:`, `body:`, `after:`, `before:`, `is:unread` and so on. Keywords this client cannot translate, such as `tag:`, `attachment:` or `larger:`, are rejected with an error instead of being searched as plain text.
 
 `delete` moves messages to Trash; it does not delete them permanently.
 
@@ -128,14 +128,14 @@ gofer-cli list --unread --limit 100 | gofer-cli mark read -
 | --- | --- |
 | 0 | Success |
 | 1 | Error |
-| 2 | Nothing matched or the wait timed out (`latest`, `otp`, `link`, `wait`); no such id (`read`, `save`); no such `--account` or `--folder` target |
+| 2 | Nothing matched or the wait timed out (`latest`, `otp`, `link`, `wait`); no such id (`read`, `attachments`, `save`, `mark`, `archive`, `delete`, `move`); no such `--account` or `--folder` target |
 | 3 | Login or configuration problem |
 
 `list`, `accounts` and `folders` exit 0 when the result is empty.
 
 ## Compatibility
 
-Targets Gofer v0.23.0. Gofer is pre-1.0 and changes between releases; other versions may work, but run `gofer-cli doctor` after upgrading the server.
+Tested against Gofer v0.23.0. Gofer is pre-1.0 and changes between releases; other versions may work, but run `gofer-cli doctor` after upgrading the server.
 
 ## Known limitations
 
