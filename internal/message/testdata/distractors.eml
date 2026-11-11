@@ -1,0 +1,16 @@
+From: Example Alerts <alert@example.com>
+To: user@example.com
+Subject: 登录提醒
+Date: Wed, 11 Nov 2026 10:30:05 +0800
+Message-ID: <distractors-1@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+您的账户于 2026-11-11 10:30 在北京市登录。
+
+订单号：2026111100123
+金额：¥199.00
+客服电话：138 0013 8000
+
+本次登录验证码：614209，10 分钟内有效。

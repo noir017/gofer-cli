@@ -1,0 +1,62 @@
+From: Example Billing <billing@example.com>
+To: user@example.com
+Subject: Your invoice and account confirmation
+Date: Wed, 11 Nov 2026 11:05:00 +0800
+Message-ID: <multipart-1@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mix-boundary"
+
+--mix-boundary
+Content-Type: multipart/alternative; boundary="alt-boundary"
+
+--alt-boundary
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Hello,
+
+Your invoice is attached. To confirm your account, open
+https://example.com/login/confirm?t=7f3a9c
+
+Thank you,
+Example Billing
+
+--alt-boundary
+Content-Type: multipart/related; boundary="rel-boundary"
+
+--rel-boundary
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<html>
+  <body>
+    <p>Hello,</p>
+    <p>Your invoice is attached. To confirm your account, open
+      <a href="https://example.com/login/confirm?t=7f3a9c">this link</a>.</p>
+    <p><img src="cid:logo@example.com" alt="Example"></p>
+  </body>
+</html>
+
+--rel-boundary
+Content-Type: image/png; name="logo.png"
+Content-Disposition: inline; filename="logo.png"
+Content-Transfer-Encoding: base64
+Content-ID: <logo@example.com>
+
+iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/
+P8Fu7N9hAAAAAElFTkSuQmCC
+
+--rel-boundary--
+
+--alt-boundary--
+
+--mix-boundary
+Content-Type: application/pdf; name="invoice.pdf"
+Content-Disposition: attachment; filename="invoice.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2Jq
+CjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFtdIC9Db3VudCAwID4+CmVuZG9iagp0cmFp
+bGVyCjw8IC9Sb290IDEgMCBSID4+CiUlRU9GCg==
+
+--mix-boundary--
