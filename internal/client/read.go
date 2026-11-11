@@ -25,8 +25,7 @@ func (c *Client) Info(ctx context.Context) (model.ServerInfo, error) {
 
 	// Searching for an impossible term is a cheap authenticated request.
 	probe, err := c.do(ctx, http.MethodGet, "/mail/search/ids", url.Values{
-		"q":          {infoProbeQuery},
-		"no_threads": {"1"},
+		"q": {infoProbeQuery},
 	}, nil, "")
 	if err != nil {
 		return info, err
@@ -47,7 +46,7 @@ func (c *Client) Info(ctx context.Context) (model.ServerInfo, error) {
 // serverVersion reads the version label every page shown before sign-in
 // carries (internal/views/public_corners.templ in gofer).
 func (c *Client) serverVersion(ctx context.Context) (string, error) {
-	resp, err := c.request(ctx, http.MethodGet, "/login", nil, nil, "", "", nil)
+	resp, err := c.request(ctx, http.MethodGet, c.urlFor("/login", nil), nil, "", "", nil)
 	if err != nil {
 		return "", fmt.Errorf("read server version: %w", err)
 	}
@@ -73,15 +72,16 @@ type SearchOptions struct {
 	Limit     int // 0 = 20
 }
 
-// Search lists messages, newest first, one row per message (never a thread).
+// Search lists gofer's mail rows, newest first. Conversation grouping is the
+// user's setting and is left alone: when it is on, a row can stand for a whole
+// conversation, Thread is set and ID is that conversation's newest message.
 func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.MessageRef, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 20
 	}
 	query := url.Values{
-		"q":          {opts.Query},
-		"no_threads": {"1"},
+		"q": {opts.Query},
 		// Pin the order: the web UI otherwise uses the user's saved sort.
 		"sort_by":    {"date"},
 		"sort_order": {"desc"},
@@ -98,7 +98,12 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 	if err != nil {
 		return nil, err
 	}
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		discard(resp)
+		return nil, fmt.Errorf("search: account not found: %w", model.ErrNotFound)
+	default:
 		return nil, responseError("search", resp)
 	}
 	defer resp.Body.Close()
@@ -108,6 +113,7 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 			ID       string `json:"id"`
 			Account  string `json:"account"`
 			FolderID string `json:"folder_id"`
+			Thread   bool   `json:"thread"`
 		} `json:"ids"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&payload); err != nil {
@@ -119,7 +125,12 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 		if len(refs) == limit {
 			break
 		}
-		refs = append(refs, model.MessageRef{ID: item.ID, Account: item.Account, FolderID: item.FolderID})
+		refs = append(refs, model.MessageRef{
+			ID:       item.ID,
+			Account:  item.Account,
+			FolderID: item.FolderID,
+			Thread:   item.Thread,
+		})
 	}
 	return refs, nil
 }
@@ -130,7 +141,17 @@ func (c *Client) Source(ctx context.Context, id string) ([]byte, error) {
 	if id == "" {
 		return nil, fmt.Errorf("read message source: empty message id")
 	}
-	resp, err := c.do(ctx, http.MethodGet, "/api/messages/"+url.PathEscape(id)+"/source", nil, nil, "")
+	// JoinPath escapes the id as one path segment, so a slash or a question
+	// mark in it cannot change the route.
+	target, err := url.JoinPath(c.base.String(), "api", "messages", id, "source")
+	if err != nil {
+		return nil, fmt.Errorf("read message source: %w", err)
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return nil, fmt.Errorf("read message source: %w", err)
+	}
+	resp, err := c.doURL(ctx, http.MethodGet, u, nil, "")
 	if err != nil {
 		return nil, err
 	}

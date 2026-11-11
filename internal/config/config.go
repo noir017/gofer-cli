@@ -121,6 +121,12 @@ func (c Config) ResolvePassword() (string, error) {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
+		if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			msg = strings.TrimSpace(msg[:i])
+		}
+		if runes := []rune(msg); len(runes) > 200 {
+			msg = string(runes[:200])
+		}
 		if msg == "" {
 			msg = err.Error()
 		}
@@ -144,9 +150,8 @@ func validate(cfg Config) error {
 	if cfg.User == "" {
 		return fmt.Errorf("%w: set %s", model.ErrConfig, EnvUser)
 	}
-	if cfg.Password == "" && cfg.PasswordCmd == "" {
-		return fmt.Errorf("%w: set %s or %s", model.ErrConfig, EnvPassword, EnvPasswordCmd)
-	}
+	// A password is only needed when a sign-in actually happens: a cached
+	// session, or a command like logout, works without one.
 	return nil
 }
 

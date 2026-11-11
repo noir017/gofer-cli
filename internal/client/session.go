@@ -22,6 +22,9 @@ type sessionFile struct {
 	SavedAt time.Time `json:"saved_at"`
 }
 
+// sessionLifetime matches gofer's cookie: 30 days (internal/auth/sessions.go).
+const sessionLifetime = 30 * 24 * time.Hour
+
 // sessionPath names the cache file after the server and the user, so one
 // machine can talk to several gofer instances without mixing sessions up.
 func sessionPath(dir, rawURL, user string) string {
@@ -40,6 +43,9 @@ func loadSession(dir, rawURL, user string) (sessionFile, error) {
 	}
 	if saved.URL != rawURL || saved.User != user || saved.Token == "" {
 		return saved, fmt.Errorf("cached session does not belong to %s", rawURL)
+	}
+	if saved.SavedAt.IsZero() || time.Since(saved.SavedAt) > sessionLifetime {
+		return saved, fmt.Errorf("cached session has expired")
 	}
 	return saved, nil
 }

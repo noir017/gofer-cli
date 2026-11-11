@@ -88,7 +88,11 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if err != nil {
 		return nil, err
 	}
+	return c.doURL(ctx, method, c.urlFor(path, query), payload, contentType)
+}
 
+// doURL is do for a target that needs path segments escaped one by one.
+func (c *Client) doURL(ctx context.Context, method string, target *url.URL, payload []byte, contentType string) (*http.Response, error) {
 	token := c.sessionToken()
 	if token == "" {
 		if err := c.login(ctx); err != nil {
@@ -97,7 +101,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		token = c.sessionToken()
 	}
 
-	resp, err := c.request(ctx, method, path, query, payload, contentType, cookieHeader(sessionCookieName, token), nil)
+	resp, err := c.request(ctx, method, target, payload, contentType, cookieHeader(sessionCookieName, token), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +115,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	if err := c.login(ctx); err != nil {
 		return nil, err
 	}
-	resp, err = c.request(ctx, method, path, query, payload, contentType, cookieHeader(sessionCookieName, c.sessionToken()), nil)
+	resp, err = c.request(ctx, method, target, payload, contentType, cookieHeader(sessionCookieName, c.sessionToken()), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -122,19 +126,24 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 	return resp, nil
 }
 
-// request sends one request without any sign-in logic. extra headers are
-// added on top of the defaults.
-func (c *Client) request(ctx context.Context, method, path string, query url.Values, body []byte, contentType, cookie string, extra http.Header) (*http.Response, error) {
+// urlFor builds a target under the configured base path.
+func (c *Client) urlFor(path string, query url.Values) *url.URL {
 	u := *c.base
 	u.Path = c.base.Path + path
 	if query != nil {
 		u.RawQuery = query.Encode()
 	}
+	return &u
+}
+
+// request sends one request without any sign-in logic. extra headers are
+// added on top of the defaults.
+func (c *Client) request(ctx context.Context, method string, target *url.URL, body []byte, contentType, cookie string, extra http.Header) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
 	if err != nil {
 		return nil, err
 	}
@@ -205,17 +214,25 @@ func needsAuth(resp *http.Response) bool {
 	return false
 }
 
-func redirectPath(resp *http.Response) string {
+func redirectURL(resp *http.Response) *url.URL {
 	location := resp.Header.Get("Location")
 	if location == "" {
-		return ""
+		return nil
 	}
 	if resp.Request != nil && resp.Request.URL != nil {
 		if u, err := resp.Request.URL.Parse(location); err == nil {
-			return u.Path
+			return u
 		}
 	}
-	if u, err := url.Parse(location); err == nil {
+	u, err := url.Parse(location)
+	if err != nil {
+		return nil
+	}
+	return u
+}
+
+func redirectPath(resp *http.Response) string {
+	if u := redirectURL(resp); u != nil {
 		return u.Path
 	}
 	return ""

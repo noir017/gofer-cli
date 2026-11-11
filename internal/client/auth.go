@@ -45,7 +45,7 @@ func (c *Client) login(ctx context.Context) error {
 		"identifier": {c.cfg.User},
 		"password":   {password},
 	}
-	resp, err := c.request(ctx, http.MethodPost, "/login", nil, []byte(form.Encode()), formContentType, "", nil)
+	resp, err := c.request(ctx, http.MethodPost, c.urlFor("/login", nil), []byte(form.Encode()), formContentType, "", nil)
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
@@ -58,6 +58,9 @@ func (c *Client) login(ctx context.Context) error {
 	}
 	if preAuth := responseCookie(resp, preAuthCookieName); preAuth != "" && redirectPath(resp) == "/login/mfa" {
 		return c.loginMFA(ctx, preAuth)
+	}
+	if err := secondFactorRedirectError(resp); err != nil {
+		return err
 	}
 	switch resp.StatusCode {
 	case http.StatusUnauthorized:
@@ -79,7 +82,7 @@ func (c *Client) loginMFA(ctx context.Context, preAuth string) error {
 		return fmt.Errorf("login: %v: %w", err, model.ErrAuth)
 	}
 	form := url.Values{"code": {code}}
-	resp, err := c.request(ctx, http.MethodPost, "/login/mfa", nil, []byte(form.Encode()), formContentType,
+	resp, err := c.request(ctx, http.MethodPost, c.urlFor("/login/mfa", nil), []byte(form.Encode()), formContentType,
 		cookieHeader(preAuthCookieName, preAuth), nil)
 	if err != nil {
 		return fmt.Errorf("login: two-factor step: %w", err)
@@ -91,14 +94,40 @@ func (c *Client) loginMFA(ctx context.Context, preAuth string) error {
 		c.setSession(token)
 		return nil
 	}
-	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("login: two-factor code rejected: %w", model.ErrAuth)
+	if err := secondFactorRedirectError(resp); err != nil {
+		return err
 	}
-	return fmt.Errorf("login: two-factor step: unexpected status %s", resp.Status)
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return fmt.Errorf("login: two-factor code rejected: %w", model.ErrAuth)
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("login: too many two-factor attempts, try again later: %w", model.ErrAuth)
+	default:
+		return fmt.Errorf("login: two-factor step: unexpected status %s", resp.Status)
+	}
+}
+
+// secondFactorRedirectError names the redirects gofer uses when the second
+// factor cannot continue (internal/handler/local_login.go in gofer).
+func secondFactorRedirectError(resp *http.Response) error {
+	target := redirectURL(resp)
+	if target == nil {
+		return nil
+	}
+	switch target.Path {
+	case "/login/mfa/enroll":
+		return fmt.Errorf("%w: gofer requires two-factor enrollment; complete it in the web UI first", model.ErrAuth)
+	case "/login":
+		if target.Query().Get("error") == "mfa" {
+			return fmt.Errorf("%w: the two-factor challenge expired or was already used; sign in again", model.ErrAuth)
+		}
+	}
+	return nil
 }
 
 // Logout revokes the server session and removes the cached one. A session the
-// server already forgot counts as logged out.
+// server already forgot counts as logged out; a transport failure leaves the
+// cached session alone, since the server may not have seen the request.
 func (c *Client) Logout(ctx context.Context) error {
 	token := c.sessionToken()
 	if token == "" {
@@ -108,9 +137,8 @@ func (c *Client) Logout(ctx context.Context) error {
 	header := http.Header{
 		csrfHeaderName: {csrfToken(token, http.MethodPost, "/auth/logout")},
 	}
-	resp, err := c.request(ctx, http.MethodPost, "/auth/logout", nil, nil, "", cookieHeader(sessionCookieName, token), header)
+	resp, err := c.request(ctx, http.MethodPost, c.urlFor("/auth/logout", nil), nil, "", cookieHeader(sessionCookieName, token), header)
 	if err != nil {
-		c.clearSession()
 		return fmt.Errorf("logout: %w", err)
 	}
 	status := resp.StatusCode

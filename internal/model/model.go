@@ -14,11 +14,14 @@ var (
 	ErrConfig   = errors.New("not configured")
 )
 
-// MessageRef is one message as gofer's search lists it.
+// MessageRef is one row as gofer's search lists it. When Thread is set the
+// row stands for a conversation and ID is its newest message; the other
+// members of the conversation are not listed separately.
 type MessageRef struct {
 	ID       string `json:"id"`
 	Account  string `json:"account"`
 	FolderID string `json:"folder_id,omitempty"`
+	Thread   bool   `json:"thread,omitempty"`
 }
 
 type Address struct {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,7 +124,6 @@ func TestLoadMissingSettings(t *testing.T) {
 	}{
 		{"url", map[string]string{EnvUser: "u", EnvPassword: "p"}, EnvURL},
 		{"user", map[string]string{EnvURL: "https://gofer.example.com", EnvPassword: "p"}, EnvUser},
-		{"password", map[string]string{EnvURL: "https://gofer.example.com", EnvUser: "u"}, EnvPassword},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -154,6 +154,22 @@ func TestLoadRejectsBadURL(t *testing.T) {
 
 	if _, err := Load(Config{}); !errors.Is(err, model.ErrConfig) {
 		t.Fatalf("Load error = %v, want ErrConfig", err)
+	}
+}
+
+func TestLoadWithoutPassword(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv(EnvURL, "https://gofer.example.com")
+	t.Setenv(EnvUser, "u")
+
+	cfg, err := Load(Config{})
+	if err != nil {
+		t.Fatalf("Load without a password: %v", err)
+	}
+	if _, err := cfg.ResolvePassword(); !errors.Is(err, model.ErrConfig) {
+		t.Fatalf("ResolvePassword error = %v, want ErrConfig at sign-in time", err)
 	}
 }
 
@@ -204,6 +220,25 @@ func TestResolvePassword(t *testing.T) {
 
 	if _, err := (Config{}).ResolvePassword(); !errors.Is(err, model.ErrConfig) {
 		t.Fatalf("missing password error = %v, want ErrConfig", err)
+	}
+}
+
+func TestResolvePasswordTrimsCommandError(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	cmd := fmt.Sprintf("printf '%s\\nsecond line\\n' >&2; exit 1", long)
+	_, err := (Config{PasswordCmd: cmd}).ResolvePassword()
+	if !errors.Is(err, model.ErrConfig) {
+		t.Fatalf("error = %v, want ErrConfig", err)
+	}
+	message := err.Error()
+	if strings.Contains(message, "second line") {
+		t.Errorf("error kept more than the first stderr line: %q", message)
+	}
+	if !strings.Contains(message, strings.Repeat("x", 200)) {
+		t.Errorf("error lost the first 200 characters: %q", message)
+	}
+	if strings.Contains(message, strings.Repeat("x", 201)) {
+		t.Errorf("error kept more than 200 characters: %q", message)
 	}
 }
 

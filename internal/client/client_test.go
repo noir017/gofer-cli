@@ -29,6 +29,7 @@ type fakeGofer struct {
 	password string
 	version  string
 	mfa      bool
+	mfaFail  string // expired, enroll or throttle
 	secret   string
 	now      func() time.Time
 
@@ -51,7 +52,8 @@ func newFakeGofer() *fakeGofer {
 		now:      time.Now,
 		sessions: make(map[string]bool),
 		sources: map[string]string{
-			"42": "From: sender@example.com\r\nSubject: hello\r\n\r\nbody text\r\n",
+			"42":  "From: sender@example.com\r\nSubject: hello\r\n\r\nbody text\r\n",
+			"4 2": "From: sender@example.com\r\nSubject: escaped id\r\n\r\nbody text\r\n",
 		},
 	}
 }
@@ -87,8 +89,13 @@ func (f *fakeGofer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if mfa {
 		f.mu.Lock()
 		f.preAuth = "pre-1"
+		failure := f.mfaFail
 		f.mu.Unlock()
 		http.SetCookie(w, &http.Cookie{Name: "gofer_pre_auth", Value: "pre-1", Path: "/"})
+		if failure == "enroll" {
+			http.Redirect(w, r, "/login/mfa/enroll", http.StatusSeeOther)
+			return
+		}
 		http.Redirect(w, r, "/login/mfa", http.StatusSeeOther)
 		return
 	}
@@ -105,8 +112,16 @@ func (f *fakeGofer) handleMFA(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.mfaLogins++
-	preAuth, secret, now := f.preAuth, f.secret, f.now
+	preAuth, secret, now, failure := f.preAuth, f.secret, f.now, f.mfaFail
 	f.mu.Unlock()
+	switch failure {
+	case "expired":
+		http.Redirect(w, r, "/login?error=mfa", http.StatusSeeOther)
+		return
+	case "throttle":
+		http.Error(w, "slow down", http.StatusTooManyRequests)
+		return
+	}
 	cookie, err := r.Cookie("gofer_pre_auth")
 	if err != nil || cookie.Value != preAuth {
 		http.Error(w, "missing pre-auth challenge", http.StatusUnauthorized)
@@ -149,10 +164,14 @@ func (f *fakeGofer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.lastQuery = r.URL.Query()
 	f.mu.Unlock()
+	if r.URL.Query().Get("scope_account_id") == "gone" {
+		http.NotFound(w, r)
+		return
+	}
 
 	ids := []map[string]any{
 		{"id": "42", "thread": false, "account": "acc1", "folder_id": "f1"},
-		{"id": "43", "thread": false, "account": "acc1", "folder_id": "f1"},
+		{"id": "43", "thread": true, "account": "acc1", "folder_id": "f1"},
 		{"id": "41", "thread": false, "account": "acc2", "folder_id": "f2"},
 	}
 	if r.URL.Query().Get("unread") == "1" {
@@ -319,13 +338,19 @@ func TestSearch(t *testing.T) {
 	if refs[0].ID != "42" || refs[0].Account != "acc1" || refs[0].FolderID != "f1" {
 		t.Errorf("refs[0] = %+v", refs[0])
 	}
+	if !refs[1].Thread {
+		t.Errorf("refs[1] = %+v, want the conversation row marked Thread", refs[1])
+	}
 	q := f.query()
 	for name, want := range map[string]string{
-		"q": "hello", "no_threads": "1", "sort_by": "date", "sort_order": "desc",
+		"q": "hello", "sort_by": "date", "sort_order": "desc",
 	} {
 		if got := q.Get(name); got != want {
 			t.Errorf("%s = %q, want %q", name, got, want)
 		}
+	}
+	if q.Has("no_threads") {
+		t.Errorf("no_threads = %q, want it omitted so conversations are not dropped", q.Get("no_threads"))
 	}
 	if q.Get("scope") != "" {
 		t.Errorf("scope = %q, want it omitted", q.Get("scope"))
@@ -364,6 +389,26 @@ func TestSource(t *testing.T) {
 
 	if _, err := c.Source(context.Background(), "99"); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing message error = %v, want ErrNotFound", err)
+	}
+
+	// A space must be escaped inside the path segment, not taken as a
+	// separator or query character.
+	escaped, err := c.Source(context.Background(), "4 2")
+	if err != nil {
+		t.Fatalf("Source with a space in the id: %v", err)
+	}
+	if string(escaped) != f.sourceBody("4 2") {
+		t.Errorf("source = %q", escaped)
+	}
+}
+
+func TestSearchAccountNotFound(t *testing.T) {
+	f := newFakeGofer()
+	c := clientFor(t, newFakeServer(t, f), f, "")
+
+	_, err := c.Search(context.Background(), SearchOptions{AccountID: "gone"})
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("Search error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -485,6 +530,53 @@ func TestLogoutSendsCSRFAndRemovesSession(t *testing.T) {
 	}
 }
 
+func TestLogoutKeepsSessionOnTransportError(t *testing.T) {
+	dir := t.TempDir()
+	c, err := New(config.Config{URL: "http://127.0.0.1:1", User: "u", Password: "p", CacheDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.token = "still-valid"
+	if err := saveSession(dir, sessionFile{
+		URL: c.cfg.URL, User: c.cfg.User, Token: "still-valid", SavedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.Logout(context.Background()); err == nil {
+		t.Fatal("Logout against an unreachable server returned no error")
+	}
+	if got := c.sessionToken(); got != "still-valid" {
+		t.Errorf("session token = %q, want it kept after a transport error", got)
+	}
+	if _, err := os.Stat(sessionPath(dir, c.cfg.URL, c.cfg.User)); err != nil {
+		t.Errorf("cached session was removed: %v", err)
+	}
+}
+
+func TestExpiredSessionIsIgnored(t *testing.T) {
+	f := newFakeGofer()
+	srv := newFakeServer(t, f)
+	cacheDir := t.TempDir()
+	if err := saveSession(cacheDir, sessionFile{
+		URL: srv.URL, User: f.user, Token: "stale",
+		SavedAt: time.Now().Add(-31 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := clientFor(t, srv, f, cacheDir)
+	if got := c.sessionToken(); got != "" {
+		t.Errorf("New loaded an expired session: %q", got)
+	}
+	if _, err := c.Search(context.Background(), SearchOptions{Query: "hello"}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := f.loginCount(); got != 1 {
+		t.Errorf("logins = %d, want a fresh sign-in instead of the expired session", got)
+	}
+}
+
 func TestMFA(t *testing.T) {
 	f := newFakeGofer()
 	f.mfa = true
@@ -520,6 +612,55 @@ func TestMFAWithoutSecret(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GOFER_TOTP_SECRET") {
 		t.Errorf("error %q does not name GOFER_TOTP_SECRET", err)
+	}
+}
+
+func TestMFAExpiredChallenge(t *testing.T) {
+	f := newFakeGofer()
+	f.mfa = true
+	f.mfaFail = "expired"
+	f.secret = testTOTPSecret
+	c := clientFor(t, newFakeServer(t, f), f, "")
+	c.cfg.TOTPSecret = testTOTPSecret
+
+	err := c.Login(context.Background())
+	if !errors.Is(err, model.ErrAuth) {
+		t.Fatalf("Login error = %v, want ErrAuth", err)
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Errorf("error %q does not say the challenge expired", err)
+	}
+}
+
+func TestMFAEnrollmentRequired(t *testing.T) {
+	f := newFakeGofer()
+	f.mfa = true
+	f.mfaFail = "enroll"
+	c := clientFor(t, newFakeServer(t, f), f, "")
+
+	err := c.Login(context.Background())
+	if !errors.Is(err, model.ErrAuth) {
+		t.Fatalf("Login error = %v, want ErrAuth", err)
+	}
+	if !strings.Contains(err.Error(), "enrollment") {
+		t.Errorf("error %q does not name the enrollment requirement", err)
+	}
+}
+
+func TestMFAThrottled(t *testing.T) {
+	f := newFakeGofer()
+	f.mfa = true
+	f.mfaFail = "throttle"
+	f.secret = testTOTPSecret
+	c := clientFor(t, newFakeServer(t, f), f, "")
+	c.cfg.TOTPSecret = testTOTPSecret
+
+	err := c.Login(context.Background())
+	if !errors.Is(err, model.ErrAuth) {
+		t.Fatalf("Login error = %v, want ErrAuth", err)
+	}
+	if !strings.Contains(err.Error(), "too many") {
+		t.Errorf("error %q does not say the attempt was throttled", err)
 	}
 }
 
