@@ -172,6 +172,10 @@ func (a *App) resolveFolderIn(ctx context.Context, api API, folders []model.Fold
 	}
 }
 
+// maxSearchFolders is gofer's cap on the folders one scoped search may name
+// (storage.MaxMailSearchFolders).
+const maxSearchFolders = 200
+
 // resolveSearchFolders turns --folder into the folders a search covers.
 // Unlike move, a name several accounts share is not an error: a listing
 // across accounts searches all of them, and --account narrows the choice.
@@ -188,6 +192,10 @@ func (a *App) resolveSearchFolders(folders []model.Folder, ref, accountID string
 			available = foldersOf(folders, accountID)
 		}
 		return nil, fmt.Errorf("%w: folder %s; available folders: %s", model.ErrNotFound, ref, folderChoices(available))
+	}
+	if len(matches) > maxSearchFolders {
+		return nil, fmt.Errorf("folder name %q matches %d folders; narrow it with --account (at most %d folders per search)",
+			ref, len(matches), maxSearchFolders)
 	}
 	ids := make([]string, 0, len(matches))
 	for _, f := range matches {

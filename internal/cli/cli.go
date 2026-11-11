@@ -44,7 +44,7 @@ type API interface {
 	Sync(ctx context.Context, accountID string) error
 	Accounts(ctx context.Context) ([]model.Account, error)
 	Folders(ctx context.Context, accountID string) ([]model.Folder, error)
-	MessageFolder(ctx context.Context, id string) (string, error)
+	MessageFolder(ctx context.Context, id string) (model.Folder, error)
 	Send(ctx context.Context, req client.SendRequest) error
 }
 

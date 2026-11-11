@@ -21,32 +21,38 @@ const (
 
 // searchMessages runs the search and reads every hit, at most fetchWorkers at
 // a time, keeping the order the server returned. Trash is dropped unless
-// --folder asked for it, and every row is given its folder name.
-func (a *App) searchMessages(ctx context.Context, f filterFlags) ([]model.Message, error) {
+// --folder asked for it, and every row is given its folder name. The second
+// result is how many rows the server returned before trash was dropped.
+func (a *App) searchMessages(ctx context.Context, f filterFlags) ([]model.Message, int, error) {
 	api, err := a.connect()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	opts, folders, err := a.prepareSearch(ctx, api, f, 0)
+	limit := f.limitOrDefault()
+	opts, folders, err := a.prepareSearch(ctx, api, f, fetchLimit(limit))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	refs, err := api.Search(ctx, opts)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	searched := len(refs)
 	if len(opts.FolderIDs) == 0 {
 		refs = withoutTrash(refs, folders)
 	}
+	if len(refs) > limit {
+		refs = refs[:limit]
+	}
 	msgs, err := a.fetchAll(ctx, api, refs)
 	if err != nil {
-		return nil, err
+		return nil, searched, err
 	}
 	names := folderNames(folders)
 	for i := range msgs {
 		msgs[i].Folder = names[msgs[i].FolderID]
 	}
-	return msgs, nil
+	return msgs, searched, nil
 }
 
 // fetchAll reads every ref and drops the ones that fail, with a line on
@@ -283,15 +289,16 @@ func (a *App) printRef(ctx context.Context, api API, ref model.MessageRef, raw, 
 }
 
 // nameFolder fills in the folder id and name of a message. A read by id has
-// no folder id: gofer only reports it in the message's Move dialog.
+// no folder id: the Move dialog reports both, so no folder listing is needed.
 func (a *App) nameFolder(ctx context.Context, api API, m *model.Message, names map[string]string) {
 	if m.FolderID == "" {
-		id, err := api.MessageFolder(ctx, m.ID)
+		folder, err := api.MessageFolder(ctx, m.ID)
 		if err != nil {
 			_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: cannot tell the folder of message %s: %v\n", m.ID, err)
 			return
 		}
-		m.FolderID = id
+		m.FolderID, m.Folder = folder.ID, folder.Name
+		return
 	}
 	m.Folder = names[m.FolderID]
 }

@@ -4,29 +4,25 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
 
-const moveDialogPage = `<!doctype html><html><body>
-<div class="h-[50vh]" role="listbox" data-mail-move-list data-mail-move-source-account="acc1">
-  <button type="button" data-mail-move-folder="f1" data-mail-move-account="acc1" data-mail-move-name="inbox" disabled>
-    <span>Inbox</span>
-  </button>
-  <button type="button" data-mail-move-folder="f2" data-mail-move-account="acc1" data-mail-move-name="archive">
-    <span>Archive</span>
-  </button>
-  <button type="button" data-mail-move-folder="f9" data-mail-move-account="acc2" data-mail-move-name="sent" disabled>
-    <span>Sent</span>
-  </button>
-</div>
-</body></html>`
+// moveDialogPage is a real /email/{id}/move page, saved from a live instance.
+// Account and folder ids, addresses and folder labels were replaced with
+// example.com values before saving.
+const moveDialogPage = "testdata/move_dialog.html"
 
 func TestMessageFolder(t *testing.T) {
+	page, err := os.ReadFile(moveDialogPage)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
 	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path = r.URL.Path
-		_, _ = w.Write([]byte(moveDialogPage))
+		_, _ = w.Write(page)
 	}))
 	defer srv.Close()
 	c := newBareClient(t, srv)
@@ -35,8 +31,10 @@ func TestMessageFolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MessageFolder: %v", err)
 	}
-	if got != "f1" {
-		t.Errorf("folder = %q, want f1 (the disabled row of the message's own account)", got)
+	// The message sits in the source account's Trash; other accounts have a
+	// disabled row too, and those must not be taken for it.
+	if got.ID != "f-15" || got.Name != "Trash" {
+		t.Errorf("folder = %+v, want f-15 Trash", got)
 	}
 	if path != "/email/42/move" {
 		t.Errorf("path = %q, want /email/42/move", path)

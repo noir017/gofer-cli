@@ -72,6 +72,24 @@ func TestSearchFolderScope(t *testing.T) {
 	if q.Has("scope_account_id") {
 		t.Errorf("scope_account_id = %q, want it omitted", q.Get("scope_account_id"))
 	}
+	if q.Get("include_descendants") != "1" {
+		t.Errorf("include_descendants = %q, want 1, as the web UI searches subfolders", q.Get("include_descendants"))
+	}
+}
+
+func TestSearchNotFoundNamesTheScope(t *testing.T) {
+	f := newFakeGofer()
+	c := clientFor(t, newFakeServer(t, f), f, "")
+	ctx := context.Background()
+
+	if _, err := c.Search(ctx, SearchOptions{FolderIDs: []string{"gone"}}); err == nil ||
+		!strings.Contains(err.Error(), "folder not found") {
+		t.Errorf("folder 404 = %v, want it to name the folder", err)
+	}
+	if _, err := c.Search(ctx, SearchOptions{AccountID: "gone"}); err == nil ||
+		!strings.Contains(err.Error(), "account not found") {
+		t.Errorf("account 404 = %v, want it to name the account", err)
+	}
 }
 
 func TestSearchHasAttachment(t *testing.T) {
@@ -182,6 +200,27 @@ func TestLoginRetriesOnce(t *testing.T) {
 	}
 	if got := attempts.Load(); got != 2 {
 		t.Errorf("attempts = %d, want 2", got)
+	}
+}
+
+func TestMFAStepIsNotRetried(t *testing.T) {
+	// A TOTP code is spent by the attempt that used it, so the two-factor
+	// step must fail at once instead of trying the same code again.
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		dropConnection(w)
+	}))
+	defer srv.Close()
+	c := newBareClient(t, srv)
+	c.cfg.TOTPSecret = testTOTPSecret
+	c.sleep = func(time.Duration) { t.Error("the two-factor step must not be retried") }
+
+	if err := c.loginMFA(context.Background(), "pre-auth"); err == nil {
+		t.Fatal("loginMFA returned no error")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("attempts = %d, want 1", got)
 	}
 }
 

@@ -156,8 +156,7 @@ func TestListEmptyWithToHintsAtAccount(t *testing.T) {
 func TestReadShowsFolder(t *testing.T) {
 	api := &fakeAPI{
 		sources:  map[string][]byte{"7": []byte("7")},
-		folders:  []model.Folder{{ID: "f_inbox", Name: "Inbox", Role: "inbox"}},
-		folderOf: map[string]string{"7": "f_inbox"},
+		folderOf: map[string]model.Folder{"7": {ID: "f_inbox", Name: "Inbox"}},
 	}
 	e := newEnv(t, api)
 	e.app.Parse = parseSubjects(e)
@@ -169,6 +168,10 @@ func TestReadShowsFolder(t *testing.T) {
 	}
 	if len(api.folderCalls) != 1 || api.folderCalls[0] != "7" {
 		t.Errorf("folder lookups = %v, want one for 7", api.folderCalls)
+	}
+	// The dialog carries the name, so read must not fetch the folder list.
+	if got := api.folderLists.Load(); got != 0 {
+		t.Errorf("folder list requests = %d, want none", got)
 	}
 
 	e2 := newEnv(t, api)
@@ -403,6 +406,167 @@ func TestWaitPrintsTheFolderOfANewMessage(t *testing.T) {
 	}
 	if got := e.out.String(); !strings.Contains(got, "Folder: Inbox\n") {
 		t.Fatalf("stdout = %q, want the folder line", got)
+	}
+}
+
+func TestSearchCommandsShareFolderAndAttachmentFlags(t *testing.T) {
+	for _, command := range []string{"list", "latest", "otp", "link", "wait"} {
+		e := newEnv(t, &fakeAPI{})
+		e.out.Reset()
+		if code := e.run(command, "--help"); code != 0 {
+			t.Fatalf("%s --help: exit = %d", command, code)
+		}
+		help := e.out.String()
+		for _, flag := range []string{"--folder", "--has-attachment"} {
+			if !strings.Contains(help, flag) {
+				t.Errorf("%s help = %q, want %s", command, help, flag)
+			}
+		}
+	}
+}
+
+func TestOTPWithFolderSearchesTrash(t *testing.T) {
+	api := arrivalAPI()
+	api.refs = []model.MessageRef{{ID: "trash", FolderID: "f_trash"}}
+	api.sources["trash"] = []byte("trash")
+	e := newEnv(t, api)
+	e.app.Parse = parseSubjects(e)
+	e.app.OTP = func(*model.Message, string) (string, bool) { return "482913", true }
+	if code := e.run("otp", "--folder", "Trash"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "482913\n" {
+		t.Fatalf("stdout = %q, want the code from the folder the caller named", got)
+	}
+	if got := api.searches[0].FolderIDs; len(got) != 1 || got[0] != "f_trash" {
+		t.Errorf("folders = %v, want f_trash", got)
+	}
+}
+
+func TestWaitWithFolderIncludesSent(t *testing.T) {
+	api := &seqAPI{
+		fakeAPI: &fakeAPI{
+			sources: map[string][]byte{"sent": []byte("sent")},
+			folders: []model.Folder{{ID: "f_sent", Name: "Sent", Role: "sent"}},
+		},
+		seq: [][]model.MessageRef{{}, {{ID: "sent", FolderID: "f_sent"}}},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = parseSubjects(e)
+	if code := e.run("wait", "--folder", "Sent", "--wait", "10"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); !strings.Contains(got, "Subject: sent") {
+		t.Fatalf("stdout = %q, want the sent copy the caller asked for", got)
+	}
+}
+
+func TestHasAttachmentOnEverySearchCommand(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		args    []string
+	}{
+		{"list", nil},
+		{"latest", nil},
+		{"otp", nil},
+		{"link", nil},
+		{"wait", []string{"--wait", "1"}},
+	} {
+		api := &fakeAPI{}
+		e := newEnv(t, api)
+		args := append([]string{tc.command, "--has-attachment"}, tc.args...)
+		_ = e.run(args...)
+		if len(api.searches) == 0 || !api.searches[0].HasAttachment {
+			t.Errorf("%s: has attachment = false, want the filter passed to the search", tc.command)
+		}
+	}
+}
+
+func TestListFetchesMoreAndTruncatesAfterTrash(t *testing.T) {
+	api := &fakeAPI{
+		refs: []model.MessageRef{
+			{ID: "t1", FolderID: "f_trash"},
+			{ID: "t2", FolderID: "f_trash"},
+			{ID: "a", FolderID: "f_inbox"},
+			{ID: "b", FolderID: "f_inbox"},
+			{ID: "c", FolderID: "f_inbox"},
+		},
+		sources: map[string][]byte{
+			"t1": []byte("t1"), "t2": []byte("t2"),
+			"a": []byte("a"), "b": []byte("b"), "c": []byte("c"),
+		},
+		folders: []model.Folder{
+			{ID: "f_inbox", Name: "Inbox", Role: "inbox"},
+			{ID: "f_trash", Name: "Trash", Role: "trash"},
+		},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = parseSubjects(e)
+	if code := e.run("list", "--limit", "2"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := api.searches[0].Limit; got != fetchLimit(2) {
+		t.Errorf("search limit = %d, want %d so trash does not use up the listing", got, fetchLimit(2))
+	}
+	lines := strings.Split(strings.TrimSpace(e.out.String()), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "a\t") || !strings.HasPrefix(lines[1], "b\t") {
+		t.Fatalf("stdout = %q, want the two inbox messages", e.out.String())
+	}
+	if got := api.sourceCalls.Load(); got != 2 {
+		t.Errorf("source reads = %d, want only the two listed messages", got)
+	}
+}
+
+func TestListToHintOnlyWhenTheSearchItselfIsEmpty(t *testing.T) {
+	// The search found rows and every one was trash: the filter is right,
+	// only the listing is empty, so no hint.
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "t", FolderID: "f_trash"}},
+		sources: map[string][]byte{"t": []byte("t")},
+		folders: []model.Folder{{ID: "f_trash", Role: "trash"}},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = parseSubjects(e)
+	if code := e.run("list", "--to", "someone@example.com"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if strings.Contains(e.errOut.String(), "--to matches") {
+		t.Fatalf("stderr = %q, want no hint when the search did return rows", e.errOut.String())
+	}
+
+	// An empty search with --to does hint.
+	e2 := newEnv(t, &fakeAPI{})
+	if code := e2.run("list", "--to", "someone@example.com"); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(e2.errOut.String(), "--to matches the To header") {
+		t.Fatalf("stderr = %q, want the hint", e2.errOut.String())
+	}
+}
+
+func TestSearchFolderNameTooBroadFails(t *testing.T) {
+	api := &fakeAPI{}
+	for i := 0; i <= maxSearchFolders; i++ {
+		api.folders = append(api.folders, model.Folder{
+			ID: fmt.Sprintf("f-%d", i), AccountID: fmt.Sprintf("acc-%d", i), Name: "Shared",
+		})
+	}
+	e := newEnv(t, api)
+	if code := e.run("list", "--folder", "Shared"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if got := e.errOut.String(); !strings.Contains(got, "at most 200 folders") {
+		t.Fatalf("stderr = %q, want the folder cap", got)
+	}
+}
+
+func TestWidenHintDoublesBeyondADay(t *testing.T) {
+	e := newEnv(t, &fakeAPI{})
+	if code := e.run("otp", "--since", "48h"); code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if got := e.errOut.String(); !strings.Contains(got, "widen with --since 96h") {
+		t.Fatalf("stderr = %q, want twice the window", got)
 	}
 }
 

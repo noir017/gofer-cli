@@ -27,8 +27,8 @@ func (f *filterFlags) register(cmd *cobra.Command) {
 	f.registerLimit(cmd, 20)
 }
 
-// registerLimit adds the filters with a command-specific --limit default:
-// otp, link and wait look further back than a listing.
+// registerLimit adds the shared filters. The --limit default differs by
+// command: otp, link and wait look further back than a listing.
 func (f *filterFlags) registerLimit(cmd *cobra.Command, limit int) {
 	fl := cmd.Flags()
 	fl.StringVarP(&f.query, "query", "q", "", "free-text search, passed as is")
@@ -36,18 +36,10 @@ func (f *filterFlags) registerLimit(cmd *cobra.Command, limit int) {
 	fl.StringVar(&f.from, "from", "", "only messages from this address")
 	fl.StringVar(&f.subject, "subject", "", "only messages whose subject contains this text")
 	fl.StringVar(&f.account, "account", "", "only this account, by email or id")
+	fl.StringVar(&f.folder, "folder", "", "only this folder and its subfolders, by name or id")
 	fl.BoolVar(&f.unread, "unread", false, "only unread messages")
+	fl.BoolVar(&f.hasAttachment, "has-attachment", false, "only messages with an attachment")
 	fl.IntVar(&f.limit, "limit", limit, "maximum number of messages")
-}
-
-// registerFolder adds --folder to the commands that list or read one place.
-func (f *filterFlags) registerFolder(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.folder, "folder", "", "only this folder, by name or id")
-}
-
-// registerAttachments adds --has-attachment to the commands that list.
-func (f *filterFlags) registerAttachments(cmd *cobra.Command) {
-	cmd.Flags().BoolVar(&f.hasAttachment, "has-attachment", false, "only messages with an attachment")
 }
 
 // options turns the filters into client search options. accountID is the
@@ -66,6 +58,28 @@ func (f filterFlags) options(accountID string, limit int) client.SearchOptions {
 		HasAttachment: f.hasAttachment,
 		Limit:         limit,
 	}
+}
+
+// limitOrDefault is the number of rows the caller asked for; the client
+// treats a non-positive limit as 20.
+func (f filterFlags) limitOrDefault() int {
+	if f.limit <= 0 {
+		return 20
+	}
+	return f.limit
+}
+
+// fetchLimit is how many rows a search asks for so that trash can be dropped
+// before the caller's limit applies. It takes a little more than asked, up to
+// 200, and never asks for less than the caller wants.
+func fetchLimit(limit int) int {
+	if limit >= 200 {
+		return limit
+	}
+	if limit += 100; limit > 200 {
+		limit = 200
+	}
+	return limit
 }
 
 // prepareSearch resolves --account and --folder and returns the search

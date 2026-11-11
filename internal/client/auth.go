@@ -82,8 +82,10 @@ func (c *Client) loginMFA(ctx context.Context, preAuth string) error {
 		return fmt.Errorf("login: %v: %w", err, model.ErrAuth)
 	}
 	form := url.Values{"code": {code}}
-	resp, err := c.requestAttempt(ctx, http.MethodPost, c.urlFor("/login/mfa", nil), []byte(form.Encode()), formContentType,
-		cookieHeader(preAuthCookieName, preAuth), nil, true)
+	// The TOTP code is single use, so this step is never retried: a second
+	// attempt would spend a code that is already gone.
+	resp, err := c.request(ctx, http.MethodPost, c.urlFor("/login/mfa", nil), []byte(form.Encode()), formContentType,
+		cookieHeader(preAuthCookieName, preAuth), nil)
 	if err != nil {
 		return fmt.Errorf("login: two-factor step: %w", err)
 	}

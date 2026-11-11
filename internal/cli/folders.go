@@ -1,24 +1,11 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	"github.com/noir017/gofer-cli/internal/model"
 )
-
-// allFolders lists every folder. A failure is a warning, not an error: a
-// search without folder names or without trash filtering is more useful than
-// no search at all.
-func (a *App) allFolders(ctx context.Context, api API) []model.Folder {
-	folders, err := api.Folders(ctx, "")
-	if err != nil {
-		_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: cannot list folders: %v\n", err)
-		return nil
-	}
-	return folders
-}
 
 // folderNames maps folder ids to the names shown in listings.
 func folderNames(folders []model.Folder) map[string]string {

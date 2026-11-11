@@ -206,6 +206,12 @@ func (f *fakeGofer) handleSearch(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	for _, id := range query["scope_folder_id"] {
+		if id == "gone" {
+			http.NotFound(w, r)
+			return
+		}
+	}
 
 	// Like gofer's parameter filters, and deliberately blind to q.
 	ids := make([]map[string]any, 0, len(mails))

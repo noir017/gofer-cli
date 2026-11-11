@@ -23,19 +23,19 @@ func (a *App) listCommand() *cobra.Command {
 		Example: "  gofer-cli list --from alerts@example.com --unread --limit 5",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			msgs, err := a.searchMessages(cmd.Context(), f)
+			msgs, searched, err := a.searchMessages(cmd.Context(), f)
 			if err != nil {
 				return err
 			}
-			if len(msgs) == 0 && f.to != "" {
+			// Only an empty search points at the wrong filter; an empty
+			// listing after dropping trash does not.
+			if searched == 0 && f.to != "" {
 				_, _ = fmt.Fprintln(a.Stderr, "gofer-cli: --to matches the To header; to pick a mailbox use --account <email>")
 			}
 			return a.writeList(msgs)
 		},
 	}
 	f.register(cmd)
-	f.registerFolder(cmd)
-	f.registerAttachments(cmd)
 	return cmd
 }
 
@@ -54,11 +54,7 @@ func (a *App) readCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var names map[string]string
-			if !raw {
-				names = folderNames(a.allFolders(cmd.Context(), api))
-			}
-			return a.printRef(cmd.Context(), api, model.MessageRef{ID: args[0]}, raw, html, names)
+			return a.printRef(cmd.Context(), api, model.MessageRef{ID: args[0]}, raw, html, nil)
 		},
 	}
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the message exactly as received")
@@ -83,7 +79,7 @@ func (a *App) latestCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			opts, folders, err := a.prepareSearch(ctx, api, f, findLimit)
+			opts, folders, err := a.prepareSearch(ctx, api, f, fetchLimit(1))
 			if err != nil {
 				return err
 			}
@@ -101,7 +97,6 @@ func (a *App) latestCommand() *cobra.Command {
 		},
 	}
 	f.register(cmd)
-	f.registerFolder(cmd)
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the message exactly as received")
 	cmd.Flags().BoolVar(&html, "html", false, "print the HTML part")
 	return cmd

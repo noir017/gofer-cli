@@ -107,16 +107,20 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 	if err != nil {
 		return "", nil, err
 	}
-	accountID, err := a.resolveAccount(ctx, api, f.account)
+	opts, folders, err := a.prepareSearch(ctx, api, f, fetchLimit(f.limitOrDefault()))
 	if err != nil {
 		return "", nil, err
 	}
-	opts := f.options(accountID, 0)
 	// The server's after_date takes a date, not a time, and the caller's
 	// zone decides which date it is. Ask for one day more and let the exact
 	// cutoff below drop what is older.
 	opts.After = a.Now().In(a.location()).Add(-since).AddDate(0, 0, -1).Format(dateFormat)
-	skip := skippedFolderIDs(a.allFolders(ctx, api))
+	skip := skippedFolderIDs(folders)
+	// A folder the caller named is searched even when it is Sent, Drafts or
+	// Trash: --folder is how to ask for a copy that did not arrive.
+	for _, id := range opts.FolderIDs {
+		delete(skip, id)
+	}
 	checked := make(map[string]bool)
 	deadline := a.Now().Add(wait)
 	lastSync := a.Now()
@@ -177,8 +181,17 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		return "", nil, notFoundf("timed out after %ds; no match in the last %s",
 			int(wait/time.Second), durationText(since))
 	}
-	return "", nil, notFoundf("no match since %s (last %s); widen with --since 24h",
-		a.Now().Add(-since).In(a.location()).Format("15:04"), durationText(since))
+	return "", nil, notFoundf("no match since %s (last %s); widen with --since %s",
+		a.Now().Add(-since).In(a.location()).Format("15:04"), durationText(since), widenHint(since))
+}
+
+// widenHint suggests the next window to try: a day when the caller looked at
+// less than that, twice the current window otherwise.
+func widenHint(since time.Duration) string {
+	if since < 24*time.Hour {
+		return "24h"
+	}
+	return durationText(2 * since)
 }
 
 // durationText writes a window the way a person does: 10m, 6h, 90s.
@@ -234,13 +247,14 @@ func (a *App) waitCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			accountID, err := a.resolveAccount(ctx, api, f.account)
+			opts, folders, err := a.prepareSearch(ctx, api, f, 0)
 			if err != nil {
 				return err
 			}
-			opts := f.options(accountID, 0)
-			folders := a.allFolders(ctx, api)
 			skip := skippedFolderIDs(folders)
+			for _, id := range opts.FolderIDs {
+				delete(skip, id)
+			}
 			names := folderNames(folders)
 			refs, err := api.Search(ctx, opts)
 			if err != nil {

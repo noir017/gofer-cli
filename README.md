@@ -88,17 +88,17 @@ Global flags: `--url`, `--user`, `--config`, `--json`. Every command accepts `--
 | `doctor` | Check configuration and connectivity |
 | `version` | Print the version |
 
-`list`, `latest`, `otp`, `link` and `wait` share the same filters. `--to`, `--from` and `--subject` are independent filters. `--folder` takes a folder name or id and searches only that folder; a name that exists in several accounts searches all of them, and `--account` narrows it. `-q` takes the same syntax as Gofer's search box: `from:`, `to:`, `subject:`, `body:`, `after:`, `before:`, `is:unread`, `attachment:`, `filetype:` and `has:attachment`. `filetype:` takes a preset (`pdf`, `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`, `video`) or a file extension. Keywords this client cannot translate, such as `tag:` or `larger:`, are rejected with an error instead of being searched as plain text.
+`list`, `latest`, `otp`, `link` and `wait` share the same filters, `--folder` and `--has-attachment` included. `--to`, `--from` and `--subject` are independent filters. `--folder` takes a folder name or id and searches only that folder and its subfolders; a name that exists in several accounts searches all of them, and `--account` narrows it. `-q` takes the same syntax as Gofer's search box: `from:`, `to:`, `subject:`, `body:`, `after:`, `before:`, `is:unread`, `attachment:`, `filetype:` and `has:attachment`. `filetype:` takes a preset (`pdf`, `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`, `video`) or a file extension. Keywords this client cannot translate, such as `tag:` or `larger:`, are rejected with an error instead of being searched as plain text.
 
 `delete` moves messages to Trash; it does not delete them permanently.
 
-`otp`, `link` and `wait` look for mail that arrived: a single message in Sent, Drafts or Trash is skipped. A conversation row is kept even when its newest message is a sent copy.
+`otp`, `link` and `wait` look for mail that arrived: a single message in Sent, Drafts or Trash is skipped, unless `--folder` names that folder. A conversation row is kept even when its newest message is a sent copy.
 
-`list` leaves Trash out unless `--folder` names it. Its text output is one message per line: id, account, folder, date, from, to, subject. `read` adds a `Folder:` line, and `--json` carries the folder name as `folder`.
+`list` leaves Trash out unless `--folder` names it; it searches a little further than `--limit` so dropping Trash does not empty the listing. Its text output is one message per line: id, account, folder, date, from, to, subject. `read` adds a `Folder:` line, and `--json` carries the folder name as `folder`.
 
 `mark`, `archive`, `spam`, `delete` and `move` report every message they changed as `id<TAB>result`, where the result is `read`, `unread`, `starred`, `unstarred`, `archive`, `spam`, `trash` or the destination folder's name. With `--json` the output is `[{"id":"42","result":"trash"}]`.
 
-`otp`, `link` and `wait` accept `--wait` and its hidden alias `--timeout`. When a wait runs out they say `timed out after 5s; ...`; when no wait was asked for they say `no match since 11:50 (last 10m); widen with --since 24h`. Both exit 2.
+`otp`, `link` and `wait` accept `--wait` and its hidden alias `--timeout`. When a wait runs out they say `timed out after 5s; ...`; when no wait was asked for they say `no match since 11:50 (last 10m); widen with --since 24h`. The suggested window is a day, or twice the current one when that is already a day or more. Both exit 2.
 
 The client retries a GET, or a sign-in, once after a second when the network drops the connection (reset, EOF, TLS handshake timeout, i/o timeout, connection refused). Other POSTs are never retried, so a write cannot run twice.
 

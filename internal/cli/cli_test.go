@@ -48,9 +48,10 @@ type fakeAPI struct {
 	moves       []fakeMove
 	sends       []client.SendRequest
 	logins      int
-	folderOf    map[string]string
+	folderOf    map[string]model.Folder
 	folderCalls []string
 	sourceCalls atomic.Int64
+	folderLists atomic.Int64
 }
 
 func (f *fakeAPI) Login(context.Context) error  { f.logins++; return f.loginErr }
@@ -98,13 +99,14 @@ func (f *fakeAPI) Accounts(context.Context) ([]model.Account, error) {
 }
 
 func (f *fakeAPI) Folders(context.Context, string) ([]model.Folder, error) {
+	f.folderLists.Add(1)
 	return f.folders, f.foldersErr
 }
 
-func (f *fakeAPI) MessageFolder(_ context.Context, id string) (string, error) {
+func (f *fakeAPI) MessageFolder(_ context.Context, id string) (model.Folder, error) {
 	f.folderCalls = append(f.folderCalls, id)
 	if f.folderErr != nil {
-		return "", f.folderErr
+		return model.Folder{}, f.folderErr
 	}
 	return f.folderOf[id], nil
 }

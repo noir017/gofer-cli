@@ -155,8 +155,8 @@ func TestListSearchQuery(t *testing.T) {
 	if !opts.Unread {
 		t.Error("unread = false, want true")
 	}
-	if opts.Limit != 7 {
-		t.Errorf("limit = %d, want 7", opts.Limit)
+	if opts.Limit != fetchLimit(7) {
+		t.Errorf("limit = %d, want %d", opts.Limit, fetchLimit(7))
 	}
 	if opts.After != "" || opts.Before != "" {
 		t.Errorf("after = %q, before = %q, want both empty", opts.After, opts.Before)
@@ -252,8 +252,8 @@ func TestLatestSearchesPastTrash(t *testing.T) {
 	if code := e.run("latest"); code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
 	}
-	if got := api.searches[0].Limit; got != findLimit {
-		t.Fatalf("limit = %d, want %d, so trash rows can be skipped", got, findLimit)
+	if got := api.searches[0].Limit; got != fetchLimit(1) {
+		t.Fatalf("limit = %d, want %d, so trash rows can be skipped", got, fetchLimit(1))
 	}
 	if got := api.sourceCalls.Load(); got != 1 {
 		t.Errorf("source reads = %d, want the trash row left unread", got)
@@ -596,10 +596,10 @@ func arrivalAPI() *fakeAPI {
 			"sent": []byte("sent"), "draft": []byte("draft"), "inbox": []byte("inbox"),
 		},
 		folders: []model.Folder{
-			{ID: "f_sent", Role: "sent"},
-			{ID: "f_drafts", Role: "drafts"},
-			{ID: "f_inbox", Role: "inbox"},
-			{ID: "f_trash", Role: "trash"},
+			{ID: "f_sent", Name: "Sent", Role: "sent"},
+			{ID: "f_drafts", Name: "Drafts", Role: "drafts"},
+			{ID: "f_inbox", Name: "Inbox", Role: "inbox"},
+			{ID: "f_trash", Name: "Trash", Role: "trash"},
 		},
 	}
 }
@@ -1267,8 +1267,8 @@ func TestOTPSearchWindow(t *testing.T) {
 		t.Fatalf("exit = %d, want 2", code)
 	}
 	opts := api.searches[0]
-	if opts.Limit != 50 {
-		t.Errorf("limit = %d, want 50", opts.Limit)
+	if opts.Limit != fetchLimit(50) {
+		t.Errorf("limit = %d, want %d", opts.Limit, fetchLimit(50))
 	}
 	want := e.clock.t.Add(-10*time.Minute).AddDate(0, 0, -1).Format("2006-01-02")
 	if opts.After != want {

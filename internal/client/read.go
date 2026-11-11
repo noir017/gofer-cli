@@ -125,6 +125,8 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 	switch {
 	case len(opts.FolderIDs) > 0:
 		query.Set("scope", "folders")
+		// The web UI searches a folder and what is inside it; do the same.
+		query.Set("include_descendants", "1")
 		for _, id := range opts.FolderIDs {
 			query.Add("scope_folder_id", id)
 		}
@@ -141,7 +143,14 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 	case http.StatusOK:
 	case http.StatusNotFound:
 		discard(resp)
-		return nil, fmt.Errorf("search: account not found: %w", model.ErrNotFound)
+		switch {
+		case len(opts.FolderIDs) > 0:
+			return nil, fmt.Errorf("search: folder not found: %w", model.ErrNotFound)
+		case opts.AccountID != "":
+			return nil, fmt.Errorf("search: account not found: %w", model.ErrNotFound)
+		default:
+			return nil, fmt.Errorf("search: no such mailbox: %w", model.ErrNotFound)
+		}
 	default:
 		return nil, responseError("search", resp)
 	}
