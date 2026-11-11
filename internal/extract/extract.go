@@ -29,9 +29,8 @@ const (
 
 // OTP returns the verification code in m. A non-empty pattern is a regexp
 // that either describes the code in its surroundings, as `code is (\d{6})`,
-// in which case its first group (or whole match) is the code, or describes
-// the code itself, as `^\d{6}$`, in which case the best code the scan finds
-// that matches it is returned.
+// in which case its first group is the code, or describes the code itself, as
+// `\d{6}`, in which case the codes the scan finds are filtered by it.
 func OTP(m *model.Message, pattern string) (string, bool) {
 	if m == nil {
 		return "", false
@@ -42,32 +41,65 @@ func OTP(m *model.Message, pattern string) (string, bool) {
 		if err != nil {
 			return "", false
 		}
+		// The scan reads width-normalized text, so a pattern written with
+		// full-width punctuation has to be normalized the same way.
+		var normalized *regexp.Regexp
+		if n := normalizeWidth(pattern); n != pattern {
+			if compiled, err := regexp.Compile(n); err == nil {
+				normalized = compiled
+			}
+		}
+		matchOne := func(re *regexp.Regexp, text string) (string, bool) {
+			match := re.FindStringSubmatch(text)
+			if match == nil {
+				return "", false
+			}
+			if len(match) > 1 {
+				return match[1], match[1] != ""
+			}
+			return match[0], match[0] != ""
+		}
+		matchText := func(text string) (string, bool) {
+			if code, ok := matchOne(re, text); ok {
+				return code, true
+			}
+			if normalized != nil {
+				return matchOne(normalized, normalizeWidth(text))
+			}
+			return "", false
+		}
+		// A pattern with a group describes the code in its surroundings, so
+		// the text is searched first and the group is the code.
+		if re.NumSubexp() > 0 {
+			for _, text := range []string{m.Subject, m.Text, m.HTML} {
+				if text == "" {
+					continue
+				}
+				if code, ok := matchText(text); ok {
+					return code, true
+				}
+			}
+			for _, c := range otpCandidates(m) {
+				if re.MatchString(c.code) || (normalized != nil && normalized.MatchString(c.code)) {
+					return c.code, true
+				}
+			}
+			return "", false
+		}
+		// Without a group the pattern describes the code itself. Filter the
+		// codes the scan found first: it knows which numbers are codes, so
+		// an order number in the subject cannot win over the real code.
+		for _, c := range otpCandidates(m) {
+			if re.MatchString(c.code) || (normalized != nil && normalized.MatchString(c.code)) {
+				return c.code, true
+			}
+		}
 		for _, text := range []string{m.Subject, m.Text, m.HTML} {
 			if text == "" {
 				continue
 			}
-			// The raw text first: a pattern copied from the message keeps
-			// the full-width punctuation it was written with. The width-
-			// normalized text then covers patterns written in ASCII.
-			for _, form := range []string{text, normalizeWidth(text)} {
-				match := re.FindStringSubmatch(form)
-				if match == nil {
-					continue
-				}
-				if len(match) > 1 {
-					if match[1] != "" {
-						return match[1], true
-					}
-					continue
-				}
-				if match[0] != "" {
-					return match[0], true
-				}
-			}
-		}
-		for _, c := range otpCandidates(m) {
-			if re.MatchString(c.code) {
-				return c.code, true
+			if code, ok := matchText(text); ok {
+				return code, true
 			}
 		}
 		return "", false

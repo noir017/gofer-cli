@@ -92,6 +92,8 @@ Global flags: `--url`, `--user`, `--config`, `--json`. Every command accepts `--
 
 `delete` moves messages to Trash; it does not delete them permanently.
 
+`otp`, `link` and `wait` look for mail that arrived: a single message in Sent or Drafts is skipped. A conversation row is kept even when its newest message is a sent copy, and Trash is never skipped.
+
 ## Use from an agent
 
 Read the verification code from a fresh email, waiting up to a minute for it:
@@ -100,7 +102,7 @@ Read the verification code from a fresh email, waiting up to a minute for it:
 gofer-cli otp --from no-reply@example.com --subject "Sign in" --since 5m --wait 60
 ```
 
-`--pattern` narrows what counts as a code when the message has several numbers.
+`--pattern` filters the codes the client extracts: only a code that matches the regexp is printed. A pattern with a capture group is matched against the message text instead, and the group is the code.
 
 Read the link from a fresh email:
 
@@ -128,7 +130,7 @@ gofer-cli list --unread --limit 100 | gofer-cli mark read -
 | --- | --- |
 | 0 | Success |
 | 1 | Error |
-| 2 | Nothing matched or the wait timed out (`latest`, `otp`, `link`, `wait`); no such id (`read`, `attachments`, `save`, `mark`, `archive`, `delete`, `move`); no such `--account` or `--folder` target |
+| 2 | Nothing matched or the wait timed out (`latest`, `otp`, `link`, `wait`); no such id (`read`, `attachments`, `save`, `mark`, `archive`, `spam`, `delete`, `move`); no such `--account` or `--folder` target |
 | 3 | Login or configuration problem |
 
 `list`, `accounts` and `folders` exit 0 when the result is empty.

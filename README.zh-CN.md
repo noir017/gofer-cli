@@ -92,6 +92,8 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 
 `delete` 只把邮件移到回收站，不永久删除。
 
+`otp`、`link`、`wait` 只找收到的邮件：已发送和草稿里的单封邮件会跳过；会话行即使最新一封是已发送副本也保留，垃圾箱不跳过。
+
 ## 在 agent 里使用
 
 从新邮件里取验证码，最多等一分钟：
@@ -100,7 +102,7 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 gofer-cli otp --from no-reply@example.com --subject "Sign in" --since 5m --wait 60
 ```
 
-邮件里有多个数字时，用 `--pattern` 限定什么算验证码。
+`--pattern` 在客户端提取出的候选码里筛选，只有匹配的码才输出；带捕获组的正则改为直接在正文里匹配，取第一组作为验证码。
 
 从新邮件里取链接：
 
@@ -128,7 +130,7 @@ gofer-cli list --unread --limit 100 | gofer-cli mark read -
 | --- | --- |
 | 0 | 成功 |
 | 1 | 出错 |
-| 2 | 没有匹配或等待超时（`latest`、`otp`、`link`、`wait`）；id 不存在（`read`、`attachments`、`save`、`mark`、`archive`、`delete`、`move`）；`--account` 或 `--folder` 指定的对象不存在 |
+| 2 | 没有匹配或等待超时（`latest`、`otp`、`link`、`wait`）；id 不存在（`read`、`attachments`、`save`、`mark`、`archive`、`spam`、`delete`、`move`）；`--account` 或 `--folder` 指定的对象不存在 |
 | 3 | 登录或配置问题 |
 
 `list`、`accounts`、`folders` 结果为空时退出码是 0。

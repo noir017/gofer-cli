@@ -99,9 +99,11 @@ func (a *App) doctorCommand() *cobra.Command {
 				if cerr != nil {
 					fail("server", cerr)
 				} else if info, ierr := api.Info(ctx); ierr != nil {
-					// Info signs in for its probe. A refused sign-in is a
-					// login problem, not an unreachable server.
+					// Info signs in for its probe. A refused sign-in means
+					// the server answered, so the server check passes and
+					// the login check fails.
 					if errors.Is(ierr, model.ErrAuth) {
+						pass("server", displayURL(cfg.URL))
 						fail("login", ierr)
 					} else {
 						fail("server", ierr)

@@ -673,6 +673,49 @@ func TestOTPWarnsWhenFoldersFail(t *testing.T) {
 	}
 }
 
+func TestOTPKeepsConversationRows(t *testing.T) {
+	// With conversation grouping on, a row's folder is where its newest
+	// message sits. A conversation whose newest message is a sent copy must
+	// still be read: the received mail is inside it.
+	api := arrivalAPI()
+	api.refs = []model.MessageRef{{ID: "thread", FolderID: "f_sent", Thread: true}}
+	api.sources["thread"] = []byte("thread")
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Date: e.clock.t, Subject: string(raw)}, nil
+	}
+	e.app.OTP = func(*model.Message, string) (string, bool) { return "482913", true }
+	if code := e.run("otp"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "482913\n" {
+		t.Fatalf("stdout = %q, want the conversation row read", got)
+	}
+}
+
+func TestWaitKeepsConversationRows(t *testing.T) {
+	api := &seqAPI{
+		fakeAPI: &fakeAPI{
+			sources: map[string][]byte{"thread": []byte("thread")},
+			folders: []model.Folder{{ID: "f_sent", Role: "sent"}},
+		},
+		seq: [][]model.MessageRef{
+			{},
+			{{ID: "thread", FolderID: "f_sent", Thread: true}},
+		},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Date: e.clock.t, Subject: string(raw)}, nil
+	}
+	if code := e.run("wait", "--timeout", "10"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); !strings.Contains(got, "Subject: thread") {
+		t.Fatalf("stdout = %q, want the conversation row printed", got)
+	}
+}
+
 func TestWaitSkipsSentCopy(t *testing.T) {
 	api := &seqAPI{
 		fakeAPI: &fakeAPI{
@@ -807,12 +850,17 @@ func TestDoctorReportsRefusedLoginAsLogin(t *testing.T) {
 	if code := e.run("doctor"); code != 3 {
 		t.Fatalf("exit = %d, want 3", code)
 	}
-	got := e.out.String()
-	if !strings.Contains(got, "login") || !strings.Contains(got, "FAIL") {
-		t.Fatalf("stdout = %q, want a failed login check", got)
+	var serverOK, loginFail bool
+	for _, line := range strings.Split(e.out.String(), "\n") {
+		switch {
+		case strings.HasPrefix(line, "server") && strings.Contains(line, "ok"):
+			serverOK = true
+		case strings.HasPrefix(line, "login") && strings.Contains(line, "FAIL"):
+			loginFail = true
+		}
 	}
-	if strings.Contains(got, "server") {
-		t.Errorf("stdout = %q, want the refused sign-in not blamed on the server", got)
+	if !serverOK || !loginFail {
+		t.Fatalf("stdout = %q, want a passing server check and a failed login check", e.out.String())
 	}
 }
 
@@ -1217,9 +1265,24 @@ func TestOTPSearchWindow(t *testing.T) {
 	if opts.Limit != 50 {
 		t.Errorf("limit = %d, want 50", opts.Limit)
 	}
-	want := e.clock.t.Add(-10 * time.Minute).Format("2006-01-02")
+	want := e.clock.t.Add(-10*time.Minute).AddDate(0, 0, -1).Format("2006-01-02")
 	if opts.After != want {
 		t.Errorf("after = %q, want %q", opts.After, want)
+	}
+}
+
+func TestOTPSearchWindowUsesTheLocalDate(t *testing.T) {
+	api := &fakeAPI{}
+	e := newEnv(t, api)
+	e.app.Location = time.FixedZone("CST", 8*3600)
+	// 23:30 UTC is already the next day in the reader's zone.
+	e.clock.t = time.Date(2026, 11, 10, 23, 30, 0, 0, time.UTC)
+	if code := e.run("otp"); code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	// Local date 2026-11-11, minus ten minutes, minus the day of slack.
+	if got := api.searches[0].After; got != "2026-11-10" {
+		t.Errorf("after = %q, want 2026-11-10", got)
 	}
 }
 

@@ -59,6 +59,8 @@ func TestOTPPattern(t *testing.T) {
 	}{
 		{"group", `code is (\d{6})`, "482913", true},
 		{"whole", `\d{6}`, "482913", true},
+		{"substring", `48`, "482913", true},
+		{"four digits", `\d{4}`, "482913", true},
 		{"code shape", `^48`, "482913", true},
 		{"code shape no match", `^99\d{4}$`, "", false},
 		{"case insensitive", `(?i)VERIFICATION CODE IS (\d+)`, "482913", true},
@@ -72,6 +74,32 @@ func TestOTPPattern(t *testing.T) {
 				t.Errorf("OTP(%q) = %q, %v; want %q, %v", tc.pattern, got, ok, tc.want, tc.ok)
 			}
 		})
+	}
+}
+
+func TestOTPPatternPrefersTheScannedCode(t *testing.T) {
+	// The subject holds an order number that also looks like a six-digit
+	// code; the pattern must pick the code the scanner found, not the first
+	// six digits in the text.
+	m := &model.Message{
+		Subject: "Order 123456",
+		Text:    "Your verification code is 918273.",
+	}
+	for _, pattern := range []string{`\d{6}`, `^\d{6}$`} {
+		got, ok := OTP(m, pattern)
+		if !ok || got != "918273" {
+			t.Errorf("OTP(%q) = %q, %v; want 918273, true", pattern, got, ok)
+		}
+	}
+}
+
+func TestOTPPatternIsWidthNormalized(t *testing.T) {
+	// The pattern is written with a full-width colon and the text with an
+	// ASCII one; normalizing both makes them meet.
+	m := &model.Message{Text: "验证码:482913"}
+	got, ok := OTP(m, `验证码：(\d{6})`)
+	if !ok || got != "482913" {
+		t.Errorf("OTP = %q, %v; want 482913, true", got, ok)
 	}
 }
 

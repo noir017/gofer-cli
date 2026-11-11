@@ -1,12 +1,16 @@
 package client
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
 	"golang.org/x/net/html"
 
+	"github.com/noir017/gofer-cli/internal/config"
 	"github.com/noir017/gofer-cli/internal/model"
 )
 
@@ -99,6 +103,44 @@ func TestParseSidebarPageFolders(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("folder %s missing", w.ID)
+		}
+	}
+}
+
+func TestFoldersSurvivesUnreadCountFailure(t *testing.T) {
+	// The unread badge endpoint is separate from the folder list. When it
+	// fails the folders are still there, so the listing keeps them with no
+	// counts instead of failing as a whole.
+	page, err := os.ReadFile("testdata/sidebar_mail.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/sidebar/mail", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(page)
+	})
+	mux.HandleFunc("GET /api/folders/unread", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "counts unavailable", http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c, err := New(config.Config{URL: srv.URL, User: "u", Password: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.token = "test"
+
+	folders, err := c.Folders(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Folders: %v", err)
+	}
+	if len(folders) != 15 {
+		t.Fatalf("got %d folders, want 15", len(folders))
+	}
+	for _, folder := range folders {
+		if folder.Unread != 0 {
+			t.Errorf("folder %s unread = %d, want 0 without the count endpoint", folder.ID, folder.Unread)
 		}
 	}
 }

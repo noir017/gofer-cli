@@ -55,12 +55,13 @@ func (c *Client) Folders(ctx context.Context, accountID string) ([]model.Folder,
 		}
 		folders = append(folders, folder)
 	}
-	unread, err := c.folderUnread(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for i := range folders {
-		folders[i].Unread = unread[folders[i].ID]
+	// Unread counts are a bonus: a server that cannot answer the count
+	// endpoint still has folders, and the listing is more useful than an
+	// error.
+	if unread, err := c.folderUnread(ctx); err == nil {
+		for i := range folders {
+			folders[i].Unread = unread[folders[i].ID]
+		}
 	}
 	return folders, nil
 }

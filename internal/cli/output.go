@@ -178,11 +178,16 @@ func (a *App) writeList(msgs []model.Message) error {
 // Gofer stamps its own outgoing mail in UTC, and a bare "07:38" for a message
 // that arrived at 15:38 reads as the wrong time.
 func (a *App) displayTime(t time.Time) string {
-	loc := a.Location
-	if loc == nil {
-		loc = time.Local
+	return t.In(a.location()).Format(dateTimeFormat)
+}
+
+// location is where the CLI reads and shows dates: the configured zone, or
+// the machine's own when none is set.
+func (a *App) location() *time.Location {
+	if a.Location != nil {
+		return a.Location
 	}
-	return t.In(loc).Format(dateTimeFormat)
+	return time.Local
 }
 
 // listJSON drops Text and HTML: a listing only needs the headers.

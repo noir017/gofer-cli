@@ -133,7 +133,10 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		return "", nil, err
 	}
 	opts := f.options(accountID, 0)
-	opts.After = a.Now().Add(-since).Format(dateFormat)
+	// The server's after_date takes a date, not a time, and the caller's
+	// zone decides which date it is. Ask for one day more and let the exact
+	// cutoff below drop what is older.
+	opts.After = a.Now().In(a.location()).Add(-since).AddDate(0, 0, -1).Format(dateFormat)
 	outgoing := a.outgoingFolders(ctx, api)
 	checked := make(map[string]bool)
 	deadline := a.Now().Add(wait)
@@ -149,7 +152,9 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		}
 		cutoff := a.Now().Add(-since)
 		for _, ref := range refs {
-			if outgoing[ref.FolderID] {
+			// A conversation row is kept even when its newest message is a
+			// sent copy: the received mail is still in that conversation.
+			if !ref.Thread && outgoing[ref.FolderID] {
 				continue // a sent or draft copy, not mail that arrived
 			}
 			if checked[ref.ID] {
@@ -254,7 +259,10 @@ func (a *App) waitCommand() *cobra.Command {
 					return err
 				}
 				for _, ref := range refs {
-					if outgoing[ref.FolderID] {
+					// A conversation row is kept even when its newest
+					// message is a sent copy: the received mail is still in
+					// that conversation.
+					if !ref.Thread && outgoing[ref.FolderID] {
 						continue // a sent or draft copy, not mail that arrived
 					}
 					if before[ref.ID] || checked[ref.ID] {
