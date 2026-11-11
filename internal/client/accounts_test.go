@@ -149,13 +149,37 @@ func TestFolderLabelRejectsNestedText(t *testing.T) {
 	}
 }
 
+func TestParseSidebarPageAllowsAnEmptyAccountList(t *testing.T) {
+	// The container is there, so the page is the mail sidebar of a user who
+	// has no account yet.
+	page, err := parseSidebarPage(strings.NewReader(`<div data-sidebar-app-body="mail"><nav></nav></div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Accounts) != 0 || len(page.Folders) != 0 {
+		t.Fatalf("page = %+v, want no accounts and no folders", page)
+	}
+}
+
+func TestParseComposeAccountsAllowsAnEmptyList(t *testing.T) {
+	// A user with no account that has mail still gets the compose pane, with
+	// no From choice in it.
+	accounts, err := parseComposeAccounts(strings.NewReader(`<div data-compose-pane><form></form></div>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("accounts = %+v, want none", accounts)
+	}
+}
+
 func TestParseSidebarPageRejectsUnknownPage(t *testing.T) {
 	_, err := parseSidebarPage(strings.NewReader(`<html><body><nav><a href="/">Mail</a></nav></body></html>`))
 	if err == nil {
 		t.Fatal("a page without accounts parsed as empty")
 	}
-	if !strings.Contains(err.Error(), "data-sidebar-account") {
-		t.Fatalf("err = %v, want it to name the missing attribute", err)
+	if !strings.Contains(err.Error(), "data-sidebar-app-body") {
+		t.Fatalf("err = %v, want it to name the missing container", err)
 	}
 }
 
@@ -164,8 +188,8 @@ func TestParseComposeAccountsRejectsUnknownPage(t *testing.T) {
 	if err == nil {
 		t.Fatal("a page without From choices parsed as empty")
 	}
-	if !strings.Contains(err.Error(), "data-compose-account-item") {
-		t.Fatalf("err = %v, want it to name the missing attribute", err)
+	if !strings.Contains(err.Error(), "data-compose-pane") {
+		t.Fatalf("err = %v, want it to name the missing container", err)
 	}
 }
 

@@ -80,22 +80,23 @@ func (c *Client) runBulk(ctx context.Context, label, path string, ids []string, 
 }
 
 // runBulkChunks sends the ids batch by batch and stops at the first failure.
-// The error then says how many messages the batches before it had already
-// changed, since those changes stay.
+// The error then says how many messages had already been changed, counting the
+// ones the failing batch changed before it reported the failure, since those
+// changes stay.
 func runBulkChunks(label string, ids []string, size int, send func([]string) (bulkResult, error)) error {
 	applied := 0
 	for _, chunk := range chunkIDs(ids, size) {
 		result, err := send(chunk)
+		applied += result.Updated
 		if err == nil {
 			err = bulkResultError(label, result)
 		}
 		if err != nil {
 			if applied > 0 {
-				return fmt.Errorf("%w; %d message(s) had already been changed by the earlier batches", err, applied)
+				return fmt.Errorf("%w; %d message(s) had already been changed", err, applied)
 			}
 			return err
 		}
-		applied += result.Updated
 	}
 	return nil
 }

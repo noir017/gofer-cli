@@ -219,6 +219,20 @@ func TestRunBulkChunksReportsWhatAlreadyChanged(t *testing.T) {
 	}
 }
 
+func TestRunBulkChunksCountsTheBatchThatFailed(t *testing.T) {
+	// A batch can change some messages and then report a failure for the rest:
+	// the ones it changed are as done as the batches before it.
+	err := runBulkChunks("spam", []string{"1", "2", "3"}, 3, func([]string) (bulkResult, error) {
+		return bulkResult{Updated: 2, Failed: 1}, nil
+	})
+	if err == nil {
+		t.Fatal("a failed message was reported as success")
+	}
+	if !strings.Contains(err.Error(), "2 message(s) had already been changed") {
+		t.Fatalf("err = %v, want the 2 messages the batch changed before failing", err)
+	}
+}
+
 func TestActionStatusErrorKeepsGoferText(t *testing.T) {
 	resp := &http.Response{
 		StatusCode: http.StatusNotFound,

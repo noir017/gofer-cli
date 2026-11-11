@@ -29,6 +29,15 @@ import (
 // many folders is a few hundred kilobytes; this is far above that.
 const maxPageBytes = 8 << 20
 
+// Markers that tell a page this parser knows from one that changed shape. They
+// sit on the page itself, not on the rows, so a page that still has them and
+// lists nothing is a user without accounts or without folders.
+const (
+	sidebarBodyMarker    = "data-sidebar-app-body"
+	sidebarAccountMarker = "data-sidebar-account-toggle"
+	composePaneMarker    = "data-compose-pane"
+)
+
 // sidebarPage is what the sidebar says about the accounts and their folders.
 type sidebarPage struct {
 	Accounts []model.Account
@@ -95,9 +104,13 @@ func parseSidebarPage(r io.Reader) (sidebarPage, error) {
 	if parseErr != nil {
 		return sidebarPage{}, parseErr
 	}
-	if len(page.Accounts) == 0 {
-		return sidebarPage{}, errors.New("no account found: no element carries " +
-			"data-sidebar-account together with data-sidebar-account-provider")
+	// A page that still has its containers but no account is a user without
+	// accounts, which is an empty list and not a page this parser lost track
+	// of.
+	if len(page.Accounts) == 0 && !hasElementWithAttr(doc, sidebarBodyMarker) &&
+		!hasElementWithAttr(doc, sidebarAccountMarker) {
+		return sidebarPage{}, fmt.Errorf("not a mail sidebar: no element carries %s or %s",
+			sidebarBodyMarker, sidebarAccountMarker)
 	}
 	return page, nil
 }
@@ -160,9 +173,10 @@ func parseComposeAccounts(r io.Reader) ([]composeAccount, error) {
 		}
 		return false
 	})
-	if len(accounts) == 0 {
-		return nil, errors.New("no From choice found: no element carries " +
-			"data-compose-account-item with data-account-email or data-identity-email")
+	// The pane is there but lists no From choice when the user has no account
+	// with mail, which is an empty list rather than a changed page.
+	if !hasElementWithAttr(doc, composePaneMarker) {
+		return nil, fmt.Errorf("not the compose pane: no element carries %s", composePaneMarker)
 	}
 	return accounts, nil
 }
@@ -306,6 +320,10 @@ func hasAttr(n *html.Node, name string) bool {
 		}
 	}
 	return false
+}
+
+func hasElementWithAttr(n *html.Node, name string) bool {
+	return findHTML(n, func(m *html.Node) bool { return hasAttr(m, name) }) != nil
 }
 
 func hasClass(n *html.Node, class string) bool {

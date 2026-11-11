@@ -234,50 +234,68 @@ func joinAddresses(addresses []string) string {
 }
 
 // uploadAttachments stages the files on the server and returns what the
-// composer form must name them by.
+// composer form must name them by. A file that fails takes the ones already
+// staged with it: the send will not happen, so nothing would reference them.
 func (c *Client) uploadAttachments(ctx context.Context, paths []string) ([]composeAttachment, error) {
-	uploads := make([]composeAttachment, 0, len(paths))
+	return stageAttachments(paths,
+		func(path string) (composeAttachment, error) { return c.uploadAttachment(ctx, path) },
+		func(staged []composeAttachment) { c.discardAttachments(ctx, staged) })
+}
+
+// stageAttachments uploads the files one by one, and hands what the earlier
+// ones staged to discard when one fails.
+func stageAttachments(paths []string, upload func(string) (composeAttachment, error), discard func([]composeAttachment)) ([]composeAttachment, error) {
+	staged := make([]composeAttachment, 0, len(paths))
 	for _, path := range paths {
-		info, err := os.Stat(path)
+		attachment, err := upload(path)
 		if err != nil {
+			discard(staged)
 			return nil, err
 		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("attachment %s is a directory", path)
-		}
-		if info.Size() > maxAttachmentBytes {
-			return nil, fmt.Errorf("attachment %s is %d bytes, more than gofer accepts (%d)",
-				path, info.Size(), int64(maxAttachmentBytes))
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		body, contentType, err := attachmentUploadBody(filepath.Base(path), data)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := c.do(ctx, http.MethodPost, "/compose/attachments", nil, bytes.NewReader(body), contentType)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			err := actionStatusError("/compose/attachments", resp)
-			closeActionBody(resp)
-			return nil, err
-		}
-		var upload composeAttachment
-		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&upload)
-		closeActionBody(resp)
-		if decodeErr != nil {
-			return nil, fmt.Errorf("attachment %s: %w", path, decodeErr)
-		}
-		if upload.ID == "" {
-			return nil, fmt.Errorf("attachment %s: gofer returned no id", path)
-		}
-		uploads = append(uploads, upload)
+		staged = append(staged, attachment)
 	}
-	return uploads, nil
+	return staged, nil
+}
+
+func (c *Client) uploadAttachment(ctx context.Context, path string) (composeAttachment, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return composeAttachment{}, err
+	}
+	if info.IsDir() {
+		return composeAttachment{}, fmt.Errorf("attachment %s is a directory", path)
+	}
+	if info.Size() > maxAttachmentBytes {
+		return composeAttachment{}, fmt.Errorf("attachment %s is %d bytes, more than gofer accepts (%d)",
+			path, info.Size(), int64(maxAttachmentBytes))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return composeAttachment{}, err
+	}
+	body, contentType, err := attachmentUploadBody(filepath.Base(path), data)
+	if err != nil {
+		return composeAttachment{}, err
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/compose/attachments", nil, bytes.NewReader(body), contentType)
+	if err != nil {
+		return composeAttachment{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		err := actionStatusError("/compose/attachments", resp)
+		closeActionBody(resp)
+		return composeAttachment{}, err
+	}
+	var upload composeAttachment
+	decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&upload)
+	closeActionBody(resp)
+	if decodeErr != nil {
+		return composeAttachment{}, fmt.Errorf("attachment %s: %w", path, decodeErr)
+	}
+	if upload.ID == "" {
+		return composeAttachment{}, fmt.Errorf("attachment %s: gofer returned no id", path)
+	}
+	return upload, nil
 }
 
 // attachmentUploadBody is the multipart body POST /compose/attachments reads,

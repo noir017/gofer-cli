@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -171,6 +172,41 @@ func TestReplySubject(t *testing.T) {
 		if got := replySubject(tt.subject); got != tt.want {
 			t.Errorf("replySubject(%q) = %q, want %q", tt.subject, got, tt.want)
 		}
+	}
+}
+
+func TestStageAttachmentsDiscardsWhatItStaged(t *testing.T) {
+	var discarded []composeAttachment
+	staged, err := stageAttachments([]string{"a", "b", "c"},
+		func(path string) (composeAttachment, error) {
+			if path == "c" {
+				return composeAttachment{}, errors.New("upload refused")
+			}
+			return composeAttachment{ID: "att_" + path}, nil
+		},
+		func(got []composeAttachment) { discarded = got })
+	if err == nil {
+		t.Fatal("a failed upload was reported as success")
+	}
+	if staged != nil {
+		t.Errorf("staged = %+v, want none", staged)
+	}
+	if len(discarded) != 2 || discarded[0].ID != "att_a" || discarded[1].ID != "att_b" {
+		t.Fatalf("discarded = %+v, want the two attachments already uploaded", discarded)
+	}
+
+	// Nothing is discarded when every file goes up.
+	discarded = nil
+	staged, err = stageAttachments([]string{"a", "b"},
+		func(path string) (composeAttachment, error) {
+			return composeAttachment{ID: "att_" + path}, nil
+		},
+		func(got []composeAttachment) { discarded = got })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staged) != 2 || discarded != nil {
+		t.Fatalf("staged = %+v, discarded = %+v; want both staged and nothing discarded", staged, discarded)
 	}
 }
 
