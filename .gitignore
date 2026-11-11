@@ -1,0 +1,4 @@
+/gofer-cli
+/dist/
+*.test
+*.out
