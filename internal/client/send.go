@@ -44,7 +44,10 @@ type composeAttachment struct {
 // the account's outgoing mail, not here.
 //
 // With ReplyTo set, gofer is told which message is answered, so the new one is
-// threaded with it. The reply text is the caller's; nothing is quoted here.
+// threaded with it. The reply takes its subject from that message, with "Re: "
+// added when it has none, because gofer matches the base subject to keep the
+// thread; SendRequest.Subject is used for a new message only. The reply text
+// is the caller's; nothing is quoted here.
 func (c *Client) Send(ctx context.Context, req SendRequest) error {
 	if len(req.To) == 0 && strings.TrimSpace(req.ReplyTo) == "" {
 		return errors.New("send: no recipients")
@@ -79,13 +82,34 @@ func (c *Client) Send(ctx context.Context, req SendRequest) error {
 	resp, err := c.do(ctx, http.MethodPost, "/compose", nil,
 		strings.NewReader(form.Encode()), "application/x-www-form-urlencoded")
 	if err != nil {
+		c.discardAttachments(ctx, uploads)
 		return err
 	}
 	defer closeActionBody(resp)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return actionStatusError("/compose", resp)
+		err := actionStatusError("/compose", resp)
+		c.discardAttachments(ctx, uploads)
+		return err
 	}
 	return nil
+}
+
+// discardAttachments deletes the attachments staged for a send that failed.
+// Nothing depends on it: gofer drops unreferenced uploads when the next one
+// arrives, so an attachment that stays behind is only wasted space for a
+// while.
+func (c *Client) discardAttachments(ctx context.Context, uploads []composeAttachment) {
+	if len(uploads) == 0 {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	for _, upload := range uploads {
+		resp, err := c.do(ctx, http.MethodDelete, "/compose/attachments/"+url.PathEscape(upload.ID), nil, nil, "")
+		if err != nil {
+			continue
+		}
+		closeActionBody(resp)
+	}
 }
 
 // replySource reads the message a reply answers, or nil when replyTo is empty.
@@ -131,8 +155,9 @@ func composeForm(req SendRequest, reply *replySource, accountID, identityID stri
 
 	subject := req.Subject
 	if reply != nil {
-		subject = firstNonEmpty(subject, reply.Subject)
-		subject = replySubject(subject)
+		// Gofer keeps the threading headers only when the base subject is the
+		// answered message's, so a reply takes that subject and no other.
+		subject = replySubject(reply.Subject)
 	}
 	if subject != "" {
 		form.Set("subject", subject)
@@ -191,15 +216,6 @@ func joinAddresses(addresses []string) string {
 		}
 	}
 	return strings.Join(joined, ", ")
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 // uploadAttachments stages the files on the server and returns what the

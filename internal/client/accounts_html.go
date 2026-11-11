@@ -1,6 +1,8 @@
 package client
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 
@@ -39,7 +41,11 @@ func parseSidebarPage(r io.Reader) (sidebarPage, error) {
 		return sidebarPage{}, err
 	}
 	var page sidebarPage
+	var parseErr error
 	walkHTML(doc, func(n *html.Node) bool {
+		if parseErr != nil {
+			return false
+		}
 		accountID := attr(n, "data-sidebar-account")
 		if accountID == "" {
 			return true
@@ -50,12 +56,20 @@ func parseSidebarPage(r io.Reader) (sidebarPage, error) {
 		if provider == "" {
 			return false
 		}
+		name, err := accountLabel(n)
+		if err != nil {
+			parseErr = fmt.Errorf("account %s: %w", accountID, err)
+			return false
+		}
 		page.Accounts = append(page.Accounts, model.Account{
 			ID:       accountID,
-			Name:     accountLabel(n),
+			Name:     name,
 			Provider: provider,
 		})
 		walkHTML(n, func(m *html.Node) bool {
+			if parseErr != nil {
+				return false
+			}
 			folderID := attr(m, "data-mail-drop-folder")
 			if folderID == "" {
 				return true
@@ -63,16 +77,28 @@ func parseSidebarPage(r io.Reader) (sidebarPage, error) {
 			if attr(m, "data-mail-drop-account") != accountID {
 				return false
 			}
+			label, err := folderLabel(m)
+			if err != nil {
+				parseErr = fmt.Errorf("folder %s of account %s: %w", folderID, accountID, err)
+				return false
+			}
 			page.Folders = append(page.Folders, model.Folder{
 				ID:        folderID,
 				AccountID: accountID,
-				Name:      folderLabel(m),
+				Name:      label,
 				Role:      normalizeFolderRole(attr(m, "data-folder-role")),
 			})
 			return false
 		})
 		return false
 	})
+	if parseErr != nil {
+		return sidebarPage{}, parseErr
+	}
+	if len(page.Accounts) == 0 {
+		return sidebarPage{}, errors.New("no account found: no element carries " +
+			"data-sidebar-account together with data-sidebar-account-provider")
+	}
 	return page, nil
 }
 
@@ -134,6 +160,10 @@ func parseComposeAccounts(r io.Reader) ([]composeAccount, error) {
 		}
 		return false
 	})
+	if len(accounts) == 0 {
+		return nil, errors.New("no From choice found: no element carries " +
+			"data-compose-account-item with data-account-email or data-identity-email")
+	}
 	return accounts, nil
 }
 
@@ -198,31 +228,43 @@ func normalizeFolderRole(role string) string {
 }
 
 // accountLabel is the account name in its sidebar heading.
-func accountLabel(n *html.Node) string {
+func accountLabel(n *html.Node) (string, error) {
 	toggle := findHTML(n, func(m *html.Node) bool {
 		return attr(m, "data-sidebar-account-toggle") != ""
 	})
 	if toggle == nil {
-		return ""
+		return "", errors.New("no heading: no element carries data-sidebar-account-toggle")
 	}
 	return labelText(toggle)
 }
 
 // folderLabel is the folder name in its sidebar link.
-func folderLabel(n *html.Node) string {
+func folderLabel(n *html.Node) (string, error) {
 	return labelText(n)
 }
 
 // labelText is the text of the first span a sidebar row truncates, which is
-// the label next to its icon.
-func labelText(n *html.Node) string {
+// the label next to its icon. That span holds the label and nothing else, so
+// anything besides text inside it means the page changed: the unread badge is
+// another span of the row, and its count must never end up in the name.
+func labelText(n *html.Node) (string, error) {
 	label := findHTML(n, func(m *html.Node) bool {
 		return m.Data == "span" && hasClass(m, "truncate")
 	})
 	if label == nil {
-		return collapseText(nodeText(n))
+		return "", errors.New("no label: no span has class truncate")
 	}
-	return collapseText(nodeText(label))
+	var text strings.Builder
+	for c := label.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type != html.TextNode {
+			return "", errors.New("no label: the span with class truncate holds more than text")
+		}
+		text.WriteString(c.Data)
+	}
+	if collapsed := collapseText(text.String()); collapsed != "" {
+		return collapsed, nil
+	}
+	return "", errors.New("empty label: the span with class truncate holds no text")
 }
 
 func findHTML(n *html.Node, match func(*html.Node) bool) *html.Node {
@@ -273,17 +315,6 @@ func hasClass(n *html.Node, class string) bool {
 		}
 	}
 	return false
-}
-
-func nodeText(n *html.Node) string {
-	if n.Type == html.TextNode {
-		return n.Data
-	}
-	var b strings.Builder
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		b.WriteString(nodeText(c))
-	}
-	return b.String()
 }
 
 func collapseText(s string) string {

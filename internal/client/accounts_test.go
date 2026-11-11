@@ -77,13 +77,13 @@ func TestParseSidebarPageFolders(t *testing.T) {
 		{
 			ID:        "acc_alice_example_com_f_1b19fb1c69a1c6f6be74a126e37a10e8",
 			AccountID: "acc_alice_example_com",
-			Name:      "病毒文件夹",
+			Name:      "Projects",
 			Role:      "custom",
 		},
 		{
 			ID:        "acc_carol_example_com_f_1cd5b8e01a8f508c22389f9b0a191147",
 			AccountID: "acc_carol_example_com",
-			Name:      "对话历史记录",
+			Name:      "Receipts",
 			Role:      "custom",
 		},
 	}
@@ -116,8 +116,56 @@ func TestFolderLabelSkipsUnreadBadge(t *testing.T) {
 		t.Fatal(err)
 	}
 	link := findHTML(doc, func(n *html.Node) bool { return attr(n, "data-mail-drop-folder") != "" })
-	if got := folderLabel(link); got != "Inbox" {
-		t.Fatalf("label = %q, want Inbox", got)
+	label, err := folderLabel(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if label != "Inbox" {
+		t.Fatalf("label = %q, want Inbox", label)
+	}
+}
+
+func TestFolderLabelRejectsNestedText(t *testing.T) {
+	// A label that no longer holds its own text is a page this parser does not
+	// know, not a label to guess at.
+	doc, err := html.Parse(strings.NewReader(`<a data-mail-drop-folder="f1" data-mail-drop-account="a1">
+		<span class="flex-1 truncate"><b>Inbox</b> 42</span></a>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := findHTML(doc, func(n *html.Node) bool { return attr(n, "data-mail-drop-folder") != "" })
+	if _, err := folderLabel(link); err == nil {
+		t.Fatal("nested label accepted")
+	}
+
+	doc, err = html.Parse(strings.NewReader(`<a data-mail-drop-folder="f1" data-mail-drop-account="a1">
+		<span class="flex size-5">Inbox</span></a>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	link = findHTML(doc, func(n *html.Node) bool { return attr(n, "data-mail-drop-folder") != "" })
+	if _, err := folderLabel(link); err == nil {
+		t.Fatal("row without a truncate span accepted")
+	}
+}
+
+func TestParseSidebarPageRejectsUnknownPage(t *testing.T) {
+	_, err := parseSidebarPage(strings.NewReader(`<html><body><nav><a href="/">Mail</a></nav></body></html>`))
+	if err == nil {
+		t.Fatal("a page without accounts parsed as empty")
+	}
+	if !strings.Contains(err.Error(), "data-sidebar-account") {
+		t.Fatalf("err = %v, want it to name the missing attribute", err)
+	}
+}
+
+func TestParseComposeAccountsRejectsUnknownPage(t *testing.T) {
+	_, err := parseComposeAccounts(strings.NewReader(`<html><body><form></form></body></html>`))
+	if err == nil {
+		t.Fatal("a page without From choices parsed as empty")
+	}
+	if !strings.Contains(err.Error(), "data-compose-account-item") {
+		t.Fatalf("err = %v, want it to name the missing attribute", err)
 	}
 }
 
@@ -132,8 +180,8 @@ func TestParseComposeAccounts(t *testing.T) {
 	want := []composeAccount{
 		{ID: "acc_alice_example_com", Email: "alice@example.com", Name: "alice@example.com"},
 		{ID: "acc_bob_example_com", Email: "bob@example.com", Name: "bob@example.com", Identities: []composeIdentity{
-			{ID: "idn_1f29b89c07a6455fb190b6045233d81e", Email: "bob.alt@example.com", Name: "139 Alias 1", AccountID: "acc_bob_example_com"},
-			{ID: "idn_987d1265e35b4a9b846e28f73e5c0556", Email: "bob.news@example.com", Name: "139 Alias 2", AccountID: "acc_bob_example_com"},
+			{ID: "idn_1f29b89c07a6455fb190b6045233d81e", Email: "bob.alt@example.com", Name: "Alias One", AccountID: "acc_bob_example_com"},
+			{ID: "idn_987d1265e35b4a9b846e28f73e5c0556", Email: "bob.news@example.com", Name: "Alias Two", AccountID: "acc_bob_example_com"},
 		}},
 		{ID: "acc_carol_example_com", Email: "carol@example.com", Name: "carol@example.com"},
 		{ID: "acc_dave_example_com", Email: "dave@example.com", Name: "dave@example.com"},

@@ -52,16 +52,7 @@ func (c *Client) Act(ctx context.Context, action Action, ids []string) error {
 	if err != nil {
 		return err
 	}
-	for _, chunk := range chunkIDs(ids, bulkChunkSize) {
-		body, err := bulkBody(chunk, state, folderID)
-		if err != nil {
-			return err
-		}
-		if err := c.postBulk(ctx, path, body); err != nil {
-			return err
-		}
-	}
-	return nil
+	return c.runBulk(ctx, string(action), path, ids, state, folderID)
 }
 
 // Move moves messages to folderID (a model.Folder ID).
@@ -70,14 +61,41 @@ func (c *Client) Move(ctx context.Context, ids []string, folderID string) error 
 	if folderID == "" {
 		return errors.New("move: no destination folder")
 	}
-	for _, chunk := range chunkIDs(ids, bulkChunkSize) {
-		body, err := bulkBody(chunk, "", folderID)
+	return c.runBulk(ctx, "move", "/api/messages/move", ids, "", folderID)
+}
+
+// runBulk sends ids in batches and adds up what gofer reports.
+func (c *Client) runBulk(ctx context.Context, label, path string, ids []string, state, folderID string) error {
+	ids, err := cleanIDs(ids)
+	if err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	return runBulkChunks(label, ids, bulkChunkSize, func(chunk []string) (bulkResult, error) {
+		body, err := bulkBody(chunk, state, folderID)
 		if err != nil {
+			return bulkResult{}, err
+		}
+		return c.postBulk(ctx, path, body)
+	})
+}
+
+// runBulkChunks sends the ids batch by batch and stops at the first failure.
+// The error then says how many messages the batches before it had already
+// changed, since those changes stay.
+func runBulkChunks(label string, ids []string, size int, send func([]string) (bulkResult, error)) error {
+	applied := 0
+	for _, chunk := range chunkIDs(ids, size) {
+		result, err := send(chunk)
+		if err == nil {
+			err = bulkResultError(label, result)
+		}
+		if err != nil {
+			if applied > 0 {
+				return fmt.Errorf("%w; %d message(s) had already been changed by the earlier batches", err, applied)
+			}
 			return err
 		}
-		if err := c.postBulk(ctx, "/api/messages/move", body); err != nil {
-			return err
-		}
+		applied += result.Updated
 	}
 	return nil
 }
@@ -139,20 +157,33 @@ type bulkTarget struct {
 	ID string `json:"id"`
 }
 
-// bulkBody builds the JSON body of one bulk request. Empty ids are dropped;
-// an id list with nothing left in it is an error, since gofer refuses a
-// request without targets.
+// bulkBody builds the JSON body of one bulk request.
 func bulkBody(ids []string, state, folderID string) ([]byte, error) {
+	ids, err := cleanIDs(ids)
+	if err != nil {
+		return nil, err
+	}
 	req := bulkRequest{State: state, FolderID: folderID, Targets: make([]bulkTarget, 0, len(ids))}
 	for _, id := range ids {
-		if id = strings.TrimSpace(id); id != "" {
-			req.Targets = append(req.Targets, bulkTarget{ID: id})
-		}
-	}
-	if len(req.Targets) == 0 {
-		return nil, errors.New("no message ids")
+		req.Targets = append(req.Targets, bulkTarget{ID: id})
 	}
 	return json.Marshal(req)
+}
+
+// cleanIDs trims the ids and drops the empty ones. A list with nothing left in
+// it is an error: gofer refuses a request without targets, so an empty
+// selection must not look like a success.
+func cleanIDs(ids []string) ([]string, error) {
+	cleaned := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			cleaned = append(cleaned, id)
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil, errors.New("no message ids")
+	}
+	return cleaned, nil
 }
 
 func chunkIDs(ids []string, size int) [][]string {
@@ -167,16 +198,97 @@ func chunkIDs(ids []string, size int) [][]string {
 	return chunks
 }
 
-func (c *Client) postBulk(ctx context.Context, path string, body []byte) error {
+// bulkResult is what a bulk endpoint answers with. Not every endpoint sends
+// every count: archive reports no_archive, spam reports failed, and the rest
+// only updated.
+type bulkResult struct {
+	Updated      int `json:"updated"`
+	Messages     int `json:"messages"`
+	NoArchive    int `json:"no_archive"`
+	NoTrash      int `json:"no_trash"`
+	Failed       int `json:"failed"`
+	RemoteFailed int `json:"remote_failed"`
+	// MissingFolder is the X-Gofer-Missing-Folder header, "<account id> <role>",
+	// which names the folder an account lacks.
+	MissingFolder string `json:"-"`
+}
+
+// missingFolderHeader names the first folder gofer found missing while it ran
+// a bulk action.
+const missingFolderHeader = "X-Gofer-Missing-Folder"
+
+func (c *Client) postBulk(ctx context.Context, path string, body []byte) (bulkResult, error) {
 	resp, err := c.do(ctx, http.MethodPost, path, nil, bytes.NewReader(body), "application/json")
 	if err != nil {
-		return err
+		return bulkResult{}, err
 	}
 	defer closeActionBody(resp)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return actionStatusError(path, resp)
+		return bulkResult{}, actionStatusError(path, resp)
+	}
+	var result bulkResult
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return bulkResult{}, err
+	}
+	result, err = parseBulkAnswer(data, resp.Header.Get(missingFolderHeader))
+	if err != nil {
+		return bulkResult{}, fmt.Errorf("%s: %w", strings.TrimPrefix(path, "/api/"), err)
+	}
+	return result, nil
+}
+
+// parseBulkAnswer reads the counts a bulk endpoint answered with. An empty
+// body means the endpoint reported nothing, which is not an error; anything
+// else must be the JSON the endpoint documents.
+func parseBulkAnswer(data []byte, missingFolder string) (bulkResult, error) {
+	var result bulkResult
+	if len(bytes.TrimSpace(data)) > 0 {
+		if err := json.Unmarshal(data, &result); err != nil {
+			return bulkResult{}, fmt.Errorf("unexpected answer %q: %w", strings.TrimSpace(string(data)), err)
+		}
+	}
+	result.MissingFolder = missingFolder
+	return result, nil
+}
+
+// bulkResultError turns the counts of a successful answer into an error when
+// gofer changed nothing: a message it could not change, or an account without
+// the folder the action needs. Gofer reports both with HTTP 200.
+func bulkResultError(label string, result bulkResult) error {
+	if result.Failed > 0 {
+		return fmt.Errorf("%s: %d message(s) could not be changed", label, result.Failed)
+	}
+	if result.Updated > 0 {
+		return nil
+	}
+	switch {
+	case result.NoArchive > 0:
+		return fmt.Errorf("%s: nothing archived: %s", label,
+			missingFolderReason(result.MissingFolder, "archive", result.NoArchive))
+	case result.NoTrash > 0:
+		return fmt.Errorf("%s: nothing deleted: %s", label,
+			missingFolderReason(result.MissingFolder, "trash", result.NoTrash))
+	case result.MissingFolder != "":
+		return fmt.Errorf("%s: nothing changed: %s", label,
+			missingFolderReason(result.MissingFolder, "", 1))
 	}
 	return nil
+}
+
+// missingFolderReason names the folder gofer missed: the account it named in
+// the header when it named one, the count otherwise.
+func missingFolderReason(header, role string, count int) string {
+	if fields := strings.Fields(header); len(fields) == 2 {
+		return fmt.Sprintf("account %s has no %s folder", fields[0], fields[1])
+	}
+	if role == "" {
+		role = "matching"
+	}
+	if count == 1 {
+		return fmt.Sprintf("an account has no %s folder", role)
+	}
+	return fmt.Sprintf("%d accounts have no %s folder", count, role)
 }
 
 // closeActionBody drains and closes a response body so the connection can be

@@ -49,7 +49,7 @@ func TestComposeFormReply(t *testing.T) {
 	compareForm(t, form, want)
 }
 
-func TestComposeFormReplyKeepsGivenFields(t *testing.T) {
+func TestComposeFormReplyUsesTheOriginalSubject(t *testing.T) {
 	reply := &replySource{
 		AccountID: "acc_one",
 		MessageID: "<abc@example.com>",
@@ -58,15 +58,17 @@ func TestComposeFormReplyKeepsGivenFields(t *testing.T) {
 	}
 	form := composeForm(SendRequest{
 		To:      []string{"someone@example.com"},
-		Subject: "RE: report",
+		Subject: "Something else",
 		Text:    "see below",
 	}, reply, "acc_two", "", nil)
 
 	if got := form.Get("to"); got != "someone@example.com" {
 		t.Errorf("to = %q, want the recipient the caller gave", got)
 	}
-	if got := form.Get("subject"); got != "RE: report" {
-		t.Errorf("subject = %q, want the caller's subject unchanged", got)
+	// Gofer compares the base subject with the answered message's and drops
+	// the threading headers when they differ, so the original wins.
+	if got := form.Get("subject"); got != "Re: Report" {
+		t.Errorf("subject = %q, want Re: Report", got)
 	}
 	if got := form.Get("account_id"); got != "acc_two" {
 		t.Errorf("account_id = %q, want the account of the From address", got)

@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +16,10 @@ import (
 // Accounts lists the accounts of the signed-in user. Gofer only tells an
 // account's address on the composer's From menu, so that page is read as well
 // as the sidebar.
+//
+// The account of the local folders, whose provider is "local", never appears
+// on that menu: it has no mail server and no address to send from, so its
+// Email stays empty.
 func (c *Client) Accounts(ctx context.Context) ([]model.Account, error) {
 	page, err := c.loadSidebar(ctx, "/api/sidebar/mail")
 	if err != nil {
@@ -37,6 +43,9 @@ func (c *Client) Folders(ctx context.Context, accountID string) ([]model.Folder,
 	}
 	page, err := c.loadSidebar(ctx, path)
 	if err != nil {
+		if accountID != "" && errors.Is(err, model.ErrNotFound) {
+			return nil, c.foldersNotFound(ctx, accountID, err)
+		}
 		return nil, err
 	}
 	folders := make([]model.Folder, 0, len(page.Folders))
@@ -56,12 +65,33 @@ func (c *Client) Folders(ctx context.Context, accountID string) ([]model.Folder,
 	return folders, nil
 }
 
+// foldersNotFound explains a 404 on one account's sidebar section. Gofer
+// answers 404 for an account it cannot show, which is the account of a mail
+// sync that is turned off as well as one that does not exist, so the two are
+// told apart by asking which accounts exist.
+func (c *Client) foldersNotFound(ctx context.Context, accountID string, cause error) error {
+	accounts, err := c.Accounts(ctx)
+	if err == nil {
+		for _, account := range accounts {
+			if account.ID == accountID {
+				return fmt.Errorf("folders of account %s: mail sync is off for this account, or it is being deleted, "+
+					"so gofer shows no folders for it: %w", accountID, cause)
+			}
+		}
+	}
+	return fmt.Errorf("folders of account %s: no such account: %w", accountID, cause)
+}
+
 func (c *Client) loadSidebar(ctx context.Context, path string) (sidebarPage, error) {
 	body, err := c.getPage(ctx, path)
 	if err != nil {
 		return sidebarPage{}, err
 	}
-	return parseSidebarPage(strings.NewReader(string(body)))
+	page, err := parseSidebarPage(strings.NewReader(string(body)))
+	if err != nil {
+		return sidebarPage{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return page, nil
 }
 
 func (c *Client) loadComposeAccounts(ctx context.Context) ([]composeAccount, error) {
@@ -69,7 +99,11 @@ func (c *Client) loadComposeAccounts(ctx context.Context) ([]composeAccount, err
 	if err != nil {
 		return nil, err
 	}
-	return parseComposeAccounts(strings.NewReader(string(body)))
+	accounts, err := parseComposeAccounts(strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("/compose/pane: %w", err)
+	}
+	return accounts, nil
 }
 
 func (c *Client) folderUnread(ctx context.Context) (map[string]int, error) {
@@ -79,7 +113,7 @@ func (c *Client) folderUnread(ctx context.Context) (map[string]int, error) {
 	}
 	counts := make(map[string]int)
 	if err := json.Unmarshal(body, &counts); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("/api/folders/unread: %w", err)
 	}
 	return counts, nil
 }
