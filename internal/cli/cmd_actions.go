@@ -20,6 +20,14 @@ var markActions = map[string]client.Action{
 	"unstar": client.ActUnstar,
 }
 
+// markResults is what each mark action reports for every message.
+var markResults = map[string]string{
+	"read":   "read",
+	"unread": "unread",
+	"star":   "starred",
+	"unstar": "unstarred",
+}
+
 func (a *App) markCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "mark read|unread|star|unstar <id>... | -",
@@ -42,12 +50,14 @@ func (a *App) markCommand() *cobra.Command {
 			if err := api.Act(cmd.Context(), action, ids); err != nil {
 				return err
 			}
-			return a.done("")
+			return a.writeResults(ids, markResults[args[0]])
 		},
 	}
 }
 
-func (a *App) actionCommand(use, short, example string, action client.Action) *cobra.Command {
+// actionCommand builds archive, spam and delete. result is what each changed
+// message reports: the place it went to.
+func (a *App) actionCommand(use, short, example, result string, action client.Action) *cobra.Command {
 	return &cobra.Command{
 		Use:     use,
 		Short:   short,
@@ -65,7 +75,7 @@ func (a *App) actionCommand(use, short, example string, action client.Action) *c
 			if err := api.Act(cmd.Context(), action, ids); err != nil {
 				return err
 			}
-			return a.done("")
+			return a.writeResults(ids, result)
 		},
 	}
 }
@@ -89,14 +99,14 @@ func (a *App) moveCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			folderID, err := a.resolveFolder(cmd.Context(), api, folder, ids, account)
+			target, err := a.resolveFolder(cmd.Context(), api, folder, ids, account)
 			if err != nil {
 				return err
 			}
-			if err := api.Move(cmd.Context(), ids, folderID); err != nil {
+			if err := api.Move(cmd.Context(), ids, target.ID); err != nil {
 				return err
 			}
-			return a.done("")
+			return a.writeResults(ids, target.Name)
 		},
 	}
 	cmd.Flags().StringVar(&folder, "folder", "", "folder name or id")
@@ -104,55 +114,100 @@ func (a *App) moveCommand() *cobra.Command {
 	return cmd
 }
 
-// resolveFolder turns --folder into a folder id. An id is taken as is. A name
+// resolveFolder turns --folder into a folder. An id is taken as is. A name
 // that matches one folder is used at once; when several accounts have such a
 // folder, the account of the messages decides, and --account overrides that.
-func (a *App) resolveFolder(ctx context.Context, api API, ref string, ids []string, account string) (string, error) {
+func (a *App) resolveFolder(ctx context.Context, api API, ref string, ids []string, account string) (model.Folder, error) {
 	folders, err := api.Folders(ctx, "")
 	if err != nil {
-		return "", err
+		return model.Folder{}, err
 	}
-	for _, f := range folders {
-		if f.ID == ref {
-			return f.ID, nil
-		}
-	}
-
 	scope := ""
 	if account != "" {
 		if scope, err = a.resolveAccount(ctx, api, account); err != nil {
-			return "", err
+			return model.Folder{}, err
 		}
 	}
+	return a.resolveFolderIn(ctx, api, folders, ref, ids, scope)
+}
+
+// resolveFolderIn is resolveFolder over a folder list and an account id the
+// caller already has.
+func (a *App) resolveFolderIn(ctx context.Context, api API, folders []model.Folder, ref string, ids []string, scope string) (model.Folder, error) {
+	for _, f := range folders {
+		if f.ID == ref {
+			return f, nil
+		}
+	}
+
+	var err error
 	matches := foldersNamed(folders, ref, scope)
 	if len(matches) == 1 {
-		return matches[0].ID, nil
+		return matches[0], nil
 	}
 	if len(matches) == 0 {
-		return "", fmt.Errorf("%w: folder %s", model.ErrNotFound, ref)
+		return model.Folder{}, a.noSuchFolder(ctx, api, folders, ref, ids, scope)
 	}
 
 	// Several folders share the name: narrow them down to the account of the
 	// messages unless --account already did.
 	if scope == "" {
 		if scope, err = a.accountForIDs(ctx, api, ids); err != nil {
-			return "", err
+			return model.Folder{}, err
 		}
 	}
 	if scope == "" {
-		return "", fmt.Errorf("folder name %q matches %d folders; use the folder id or --account (%s)",
+		return model.Folder{}, fmt.Errorf("folder name %q matches %d folders; use the folder id or --account (%s)",
 			ref, len(matches), folderIDs(matches))
 	}
 	matches = foldersNamed(folders, ref, scope)
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("%w: folder %s in account %s", model.ErrNotFound, ref, scope)
+		return model.Folder{}, a.noSuchFolder(ctx, api, folders, ref, ids, scope)
 	case 1:
-		return matches[0].ID, nil
+		return matches[0], nil
 	default:
-		return "", fmt.Errorf("folder name %q matches %d folders in account %s; use one of these ids: %s",
+		return model.Folder{}, fmt.Errorf("folder name %q matches %d folders in account %s; use one of these ids: %s",
 			ref, len(matches), scope, folderIDs(matches))
 	}
+}
+
+// resolveSearchFolders turns --folder into the folders a search covers.
+// Unlike move, a name several accounts share is not an error: a listing
+// across accounts searches all of them, and --account narrows the choice.
+func (a *App) resolveSearchFolders(folders []model.Folder, ref, accountID string) ([]string, error) {
+	for _, f := range folders {
+		if f.ID == ref {
+			return []string{f.ID}, nil
+		}
+	}
+	matches := foldersNamed(folders, ref, accountID)
+	if len(matches) == 0 {
+		available := folders
+		if accountID != "" {
+			available = foldersOf(folders, accountID)
+		}
+		return nil, fmt.Errorf("%w: folder %s; available folders: %s", model.ErrNotFound, ref, folderChoices(available))
+	}
+	ids := make([]string, 0, len(matches))
+	for _, f := range matches {
+		ids = append(ids, f.ID)
+	}
+	return ids, nil
+}
+
+// noSuchFolder names the folders the caller could have asked for. When the
+// account is not known yet it is taken from the messages; a listing of every
+// folder is the fallback, since a wrong list still beats no hint at all.
+func (a *App) noSuchFolder(ctx context.Context, api API, folders []model.Folder, ref string, ids []string, scope string) error {
+	if scope == "" {
+		scope, _ = a.accountForIDs(ctx, api, ids)
+	}
+	available := folders
+	if scope != "" {
+		available = foldersOf(folders, scope)
+	}
+	return fmt.Errorf("%w: folder %s; available folders: %s", model.ErrNotFound, ref, folderChoices(available))
 }
 
 // foldersNamed returns the folders called ref, limited to accountID when it is
@@ -182,6 +237,7 @@ func (a *App) accountsCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "accounts",
 		Short:   "List the accounts",
+		Long:    "List the accounts.\n\nText columns: id, email, name, provider.",
 		Example: "  gofer-cli accounts",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -212,6 +268,7 @@ func (a *App) foldersCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "folders",
 		Short:   "List the folders",
+		Long:    "List the folders.\n\nText columns: id, account, name, role, unread.",
 		Example: "  gofer-cli folders --account me@example.com",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

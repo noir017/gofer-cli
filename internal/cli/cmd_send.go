@@ -20,8 +20,11 @@ func (a *App) sendCommand() *cobra.Command {
 		to, cc, bcc, attach           []string
 	)
 	cmd := &cobra.Command{
-		Use:     "send [--from A] --to B[,C] --subject S",
-		Short:   "Send a message",
+		Use:   "send [--from A] --to B[,C] [--subject S]",
+		Short: "Send a message",
+		Long: "Send a message. Only --to is required.\n\n" +
+			"The body comes from --body, from --body-file, or from stdin when stdin is not a terminal:\n" +
+			"  printf 'hello' | gofer-cli send --to ana@example.com",
 		Example: "  gofer-cli send --from me@example.com --to ana@example.com --subject Hi --body 'hello'",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -60,7 +63,7 @@ func (a *App) sendCommand() *cobra.Command {
 	fl.StringSliceVar(&to, "to", nil, "recipients, comma separated")
 	fl.StringSliceVar(&cc, "cc", nil, "cc recipients, comma separated")
 	fl.StringSliceVar(&bcc, "bcc", nil, "bcc recipients, comma separated")
-	fl.StringVar(&subject, "subject", "", "subject")
+	fl.StringVar(&subject, "subject", "", "subject (optional)")
 	fl.StringVar(&body, "body", "", "body text")
 	fl.StringVar(&bodyFile, "body-file", "", "file to read the body from")
 	fl.StringSliceVar(&attach, "attach", nil, "file to attach, repeatable")

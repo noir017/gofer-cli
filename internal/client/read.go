@@ -66,16 +66,18 @@ func (c *Client) serverVersion(ctx context.Context) (string, error) {
 }
 
 type SearchOptions struct {
-	Query     string // free text plus key:value tokens, as in gofer's search box
-	From      string // sender name or address
-	To        string // To recipients only; cc: and bcc: come from Query
-	Subject   string
-	Body      string
-	After     string // YYYY-MM-DD
-	Before    string // YYYY-MM-DD
-	AccountID string // "" = all accounts
-	Unread    bool
-	Limit     int // 0 = 20
+	Query         string // free text plus key:value tokens, as in gofer's search box
+	From          string // sender name or address
+	To            string // To recipients only; cc: and bcc: come from Query
+	Subject       string
+	Body          string
+	After         string   // YYYY-MM-DD
+	Before        string   // YYYY-MM-DD
+	AccountID     string   // "" = all accounts
+	FolderIDs     []string // nil = every folder; wins over AccountID
+	Unread        bool
+	HasAttachment bool
+	Limit         int // 0 = 20
 }
 
 // Search lists gofer's mail rows, newest first. Conversation grouping is the
@@ -115,8 +117,18 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 	if opts.Unread {
 		filters.unread = true
 	}
+	if opts.HasAttachment {
+		filters.attachments = true
+	}
 	query := filters.params()
-	if opts.AccountID != "" {
+	// gofer accepts one scope at a time, and a folder pins the account.
+	switch {
+	case len(opts.FolderIDs) > 0:
+		query.Set("scope", "folders")
+		for _, id := range opts.FolderIDs {
+			query.Add("scope_folder_id", id)
+		}
+	case opts.AccountID != "":
 		query.Set("scope", "account")
 		query.Set("scope_account_id", opts.AccountID)
 	}

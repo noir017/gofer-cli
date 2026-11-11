@@ -68,12 +68,12 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 
 | 命令 | 作用 |
 | --- | --- |
-| `list [-q 搜索语法] [--to A] [--from A] [--subject S] [--account EMAIL] [--unread] [--limit 20]` | 搜索或列出邮件 |
+| `list [-q 搜索语法] [--to A] [--from A] [--subject S] [--account EMAIL] [--folder F] [--unread] [--has-attachment] [--limit 20]` | 搜索或列出邮件 |
 | `read <id> [--raw] [--html]` | 输出一封邮件：正文文本（默认）、原始源码或 HTML |
 | `latest [过滤参数] [--raw] [--html]` | 符合条件的最新一封 |
 | `otp [过滤参数] [--since 10m] [--wait 秒] [--pattern 正则]` | 只输出验证码 |
 | `link [过滤参数] [--since 10m] [--wait 秒] [--match 正则]` | 只输出链接 |
-| `wait [过滤参数] [--timeout 120]` | 等一封新邮件，然后按 `read` 的文本或 JSON 格式输出 |
+| `wait [过滤参数] [--wait 120]` | 等一封新邮件，然后按 `read` 的文本或 JSON 格式输出 |
 | `attachments <id>` | 列出附件 |
 | `save <id> [--index N] [-o 目录]` | 下载附件，输出写入的路径 |
 | `mark read\|unread\|star\|unstar <id>... \| -` | 改邮件标记；`-` 从 stdin 读 id |
@@ -88,11 +88,23 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 | `doctor` | 检查配置和连通性 |
 | `version` | 输出版本 |
 
-`list`、`latest`、`otp`、`link`、`wait` 共用一套过滤参数。`--to`、`--from`、`--subject` 是各自独立的筛选条件；`-q` 里可以用和 Gofer 搜索框一样的写法：`from:`、`to:`、`subject:`、`body:`、`after:`、`before:`、`is:unread` 等。本工具翻译不了的关键字（如 `tag:`、`attachment:`、`larger:`）会直接报错，不会当成普通文本去搜。
+`list`、`latest`、`otp`、`link`、`wait` 共用一套过滤参数。`--to`、`--from`、`--subject` 是各自独立的筛选条件；`--folder` 接受文件夹名称或 ID，只搜这个文件夹；同名文件夹出现在多个账号时一起搜，加 `--account` 可缩小范围。`-q` 里可以用和 Gofer 搜索框一样的写法：`from:`、`to:`、`subject:`、`body:`、`after:`、`before:`、`is:unread`、`attachment:`、`filetype:`、`has:attachment`。`filetype:` 可以写预设类型（`pdf`、`image`、`document`、`spreadsheet`、`presentation`、`archive`、`audio`、`video`）或文件扩展名。本工具翻译不了的关键字（如 `tag:`、`larger:`）会直接报错，不会当成普通文本去搜。
 
 `delete` 只把邮件移到回收站，不永久删除。
 
-`otp`、`link`、`wait` 只找收到的邮件：已发送和草稿里的单封邮件会跳过；会话行即使最新一封是已发送副本也保留，垃圾箱不跳过。
+`otp`、`link`、`wait` 只找收到的邮件：已发送、草稿和回收站里的单封邮件会跳过；会话行即使最新一封是已发送副本也保留。
+
+`list` 默认不显示回收站里的邮件，除非 `--folder` 指定了回收站。文本输出每行一封：id、账号、文件夹、日期、发件人、收件人、主题。`read` 多一行 `Folder:`，`--json` 里的文件夹名称在 `folder` 字段。
+
+`mark`、`archive`、`spam`、`delete`、`move` 对每封改动的邮件输出一行 `id<TAB>结果`，结果是 `read`、`unread`、`starred`、`unstarred`、`archive`、`spam`、`trash` 或目标文件夹名。加 `--json` 时输出 `[{"id":"42","result":"trash"}]`。
+
+`otp`、`link`、`wait` 都接受 `--wait`，`--timeout` 是它的隐藏别名。带等待且超时报 `timed out after 5s; ...`；不等待且没找到报 `no match since 11:50 (last 10m); widen with --since 24h`。两种都退出 2。
+
+客户端遇到瞬时网络错误（连接重置、EOF、TLS 握手超时、i/o 超时、连接被拒）时，对 GET 和登录请求等 1 秒重试一次；其他 POST 不重试，避免写操作执行两遍。
+
+`list --to` 结果为空时，stderr 会提示 `--to` 匹配的是 To 头，选邮箱请用 `--account`。
+
+`move --folder` 给了一个不存在的名称时，错误信息会列出该账号的文件夹名称和 ID。
 
 ## 在 agent 里使用
 
@@ -113,7 +125,7 @@ gofer-cli link --from no-reply@example.com --wait 60 --match 'https://example.co
 等一封邮件并以 JSON 输出整封内容：
 
 ```
-gofer-cli wait --from alerts@example.com --timeout 120 --json
+gofer-cli wait --from alerts@example.com --wait 120 --json
 ```
 
 把所有未读标为已读：

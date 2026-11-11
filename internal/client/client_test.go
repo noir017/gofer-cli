@@ -627,8 +627,7 @@ func TestSearchUnsupportedKeyword(t *testing.T) {
 	ctx := context.Background()
 
 	for _, query := range []string{
-		`account:acc1`, `tag:work`, `attachment:pdf`, `filetype:pdf`,
-		`larger:1m`, `smaller:10k`, `has:attachment`, `no:tag`,
+		`account:acc1`, `tag:work`, `larger:1m`, `smaller:10k`, `no:tag`,
 		`recipient:bob@example.com`, `recipients:bob@example.com`,
 		`participant:alice`, `contact:alice`, `q:hello`, `query:hello`, `text:hello`,
 	} {

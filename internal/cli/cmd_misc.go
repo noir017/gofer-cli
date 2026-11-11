@@ -79,7 +79,7 @@ func (a *App) doctorCommand() *cobra.Command {
 			configOK := true
 			switch {
 			case err != nil:
-				fail("config", fmt.Errorf("%w: %w", model.ErrConfig, err))
+				fail("config", configError(err))
 				configOK = false
 			case cfg.URL == "":
 				fail("config", fmt.Errorf("%w: url is not set", model.ErrConfig))

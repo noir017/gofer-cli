@@ -45,7 +45,7 @@ func (c *Client) login(ctx context.Context) error {
 		"identifier": {c.cfg.User},
 		"password":   {password},
 	}
-	resp, err := c.request(ctx, http.MethodPost, c.urlFor("/login", nil), []byte(form.Encode()), formContentType, "", nil)
+	resp, err := c.requestAttempt(ctx, http.MethodPost, c.urlFor("/login", nil), []byte(form.Encode()), formContentType, "", nil, true)
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
@@ -82,8 +82,8 @@ func (c *Client) loginMFA(ctx context.Context, preAuth string) error {
 		return fmt.Errorf("login: %v: %w", err, model.ErrAuth)
 	}
 	form := url.Values{"code": {code}}
-	resp, err := c.request(ctx, http.MethodPost, c.urlFor("/login/mfa", nil), []byte(form.Encode()), formContentType,
-		cookieHeader(preAuthCookieName, preAuth), nil)
+	resp, err := c.requestAttempt(ctx, http.MethodPost, c.urlFor("/login/mfa", nil), []byte(form.Encode()), formContentType,
+		cookieHeader(preAuthCookieName, preAuth), nil, true)
 	if err != nil {
 		return fmt.Errorf("login: two-factor step: %w", err)
 	}

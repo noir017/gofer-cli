@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -14,20 +15,33 @@ import (
 // not implement are rejected, since searching for them as text would almost
 // always find nothing.
 type searchFilters struct {
-	query           string
-	from            string
-	to              string
-	recipientType   string
-	subject         string
-	body            string
-	fromDomain      string
-	recipientDomain string
-	after           string
-	before          string
-	unread          bool
-	read            bool
-	starred         bool
+	query               string
+	from                string
+	to                  string
+	recipientType       string
+	subject             string
+	body                string
+	fromDomain          string
+	recipientDomain     string
+	after               string
+	before              string
+	attachment          string
+	attachmentType      string
+	attachmentExtension string
+	unread              bool
+	read                bool
+	starred             bool
+	attachments         bool
 }
+
+// attachmentTypes are the presets gofer's Filters panel offers for filetype:
+// (setAttachmentTypeFilter in gofer's assets/js/app.js).
+var attachmentTypes = map[string]bool{
+	"pdf": true, "image": true, "document": true, "spreadsheet": true,
+	"presentation": true, "archive": true, "audio": true, "video": true,
+}
+
+var attachmentExtensionPattern = regexp.MustCompile(`^[a-z0-9]{1,16}$`)
 
 // parseSearchQuery splits the key:value tokens out of query. Tokens it does
 // not understand stay in the full-text query, as they do in the web UI.
@@ -40,7 +54,11 @@ func parseSearchQuery(query string) (searchFilters, error) {
 			if err := unsupportedSearchKeyword(key); err != nil {
 				return filters, err
 			}
-			if filters.apply(key, value) {
+			applied, err := filters.apply(key, value)
+			if err != nil {
+				return filters, err
+			}
+			if applied {
 				continue
 			}
 		}
@@ -57,19 +75,19 @@ func unsupportedSearchKeyword(key string) error {
 	switch key {
 	case "account":
 		return fmt.Errorf("search: unsupported keyword %q; use --account instead", key+":")
-	case "tag", "attachment", "filetype", "larger", "smaller",
-		"has", "no", "recipient", "recipients", "participant", "contact",
+	case "tag", "larger", "smaller",
+		"no", "recipient", "recipients", "participant", "contact",
 		"q", "query", "text":
 		return fmt.Errorf("search: unsupported keyword %q", key+":")
 	}
 	return nil
 }
 
-func (f *searchFilters) apply(key, value string) bool {
+func (f *searchFilters) apply(key, value string) (bool, error) {
 	key = strings.ToLower(strings.ReplaceAll(key, "_", "-"))
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return false
+		return false, nil
 	}
 	switch key {
 	case "from":
@@ -89,6 +107,21 @@ func (f *searchFilters) apply(key, value string) bool {
 		f.fromDomain = value
 	case "to-domain", "todomain", "recipient-domain":
 		f.recipientDomain = value
+	case "attachment", "attach", "filename":
+		f.attachment = value
+	case "filetype":
+		kind, extension, err := parseFiletype(value)
+		if err != nil {
+			return false, err
+		}
+		f.attachmentType, f.attachmentExtension = kind, extension
+	case "has":
+		switch strings.ToLower(value) {
+		case "attachment", "attachments":
+			f.attachments = true
+		default:
+			return false, fmt.Errorf("search: unsupported value %q for has:; use has:attachment", value)
+		}
 	case "is":
 		switch value {
 		case "unread":
@@ -98,12 +131,26 @@ func (f *searchFilters) apply(key, value string) bool {
 		case "starred":
 			f.starred = true
 		default:
-			return false
+			return false, nil
 		}
 	default:
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
+}
+
+// parseFiletype reads filetype: the way gofer's Filters panel does: a preset
+// type, or any file extension, which gofer calls a custom type.
+func parseFiletype(value string) (kind, extension string, err error) {
+	value = strings.ToLower(strings.TrimPrefix(value, "."))
+	if attachmentTypes[value] {
+		return value, "", nil
+	}
+	if attachmentExtensionPattern.MatchString(value) {
+		return "custom", value, nil
+	}
+	return "", "", fmt.Errorf("search: unsupported filetype %q; use pdf, image, document, spreadsheet, "+
+		"presentation, archive, audio, video or a file extension", value)
 }
 
 func (f searchFilters) params() url.Values {
@@ -127,6 +174,9 @@ func (f searchFilters) params() url.Values {
 	set("recipient_domain", f.recipientDomain)
 	set("after_date", f.after)
 	set("before_date", f.before)
+	set("attachment", f.attachment)
+	set("attachment_type", f.attachmentType)
+	set("attachment_extension", f.attachmentExtension)
 	if f.unread {
 		values.Set("unread", "1")
 	}
@@ -135,6 +185,9 @@ func (f searchFilters) params() url.Values {
 	}
 	if f.starred {
 		values.Set("starred", "1")
+	}
+	if f.attachments {
+		values.Set("attachments", "1")
 	}
 	return values
 }

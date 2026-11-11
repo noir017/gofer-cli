@@ -68,12 +68,12 @@ Global flags: `--url`, `--user`, `--config`, `--json`. Every command accepts `--
 
 | Command | What it does |
 | --- | --- |
-| `list [-q query] [--to A] [--from A] [--subject S] [--account EMAIL] [--unread] [--limit 20]` | Search or list messages |
+| `list [-q query] [--to A] [--from A] [--subject S] [--account EMAIL] [--folder F] [--unread] [--has-attachment] [--limit 20]` | Search or list messages |
 | `read <id> [--raw] [--html]` | Print one message as text (default), raw source, or HTML |
 | `latest [filters] [--raw] [--html]` | Newest message matching the filters |
 | `otp [filters] [--since 10m] [--wait seconds] [--pattern regexp]` | Print only the verification code |
 | `link [filters] [--since 10m] [--wait seconds] [--match regexp]` | Print only the link |
-| `wait [filters] [--timeout 120]` | Wait for a new message, then print it in `read`'s text or JSON form |
+| `wait [filters] [--wait 120]` | Wait for a new message, then print it in `read`'s text or JSON form |
 | `attachments <id>` | List attachments |
 | `save <id> [--index N] [-o dir]` | Download attachments and print the paths written |
 | `mark read\|unread\|star\|unstar <id>... \| -` | Change message flags; `-` reads ids from stdin |
@@ -88,11 +88,23 @@ Global flags: `--url`, `--user`, `--config`, `--json`. Every command accepts `--
 | `doctor` | Check configuration and connectivity |
 | `version` | Print the version |
 
-`list`, `latest`, `otp`, `link` and `wait` share the same filters. `--to`, `--from` and `--subject` are independent filters. `-q` takes the same syntax as Gofer's search box: `from:`, `to:`, `subject:`, `body:`, `after:`, `before:`, `is:unread` and so on. Keywords this client cannot translate, such as `tag:`, `attachment:` or `larger:`, are rejected with an error instead of being searched as plain text.
+`list`, `latest`, `otp`, `link` and `wait` share the same filters. `--to`, `--from` and `--subject` are independent filters. `--folder` takes a folder name or id and searches only that folder; a name that exists in several accounts searches all of them, and `--account` narrows it. `-q` takes the same syntax as Gofer's search box: `from:`, `to:`, `subject:`, `body:`, `after:`, `before:`, `is:unread`, `attachment:`, `filetype:` and `has:attachment`. `filetype:` takes a preset (`pdf`, `image`, `document`, `spreadsheet`, `presentation`, `archive`, `audio`, `video`) or a file extension. Keywords this client cannot translate, such as `tag:` or `larger:`, are rejected with an error instead of being searched as plain text.
 
 `delete` moves messages to Trash; it does not delete them permanently.
 
-`otp`, `link` and `wait` look for mail that arrived: a single message in Sent or Drafts is skipped. A conversation row is kept even when its newest message is a sent copy, and Trash is never skipped.
+`otp`, `link` and `wait` look for mail that arrived: a single message in Sent, Drafts or Trash is skipped. A conversation row is kept even when its newest message is a sent copy.
+
+`list` leaves Trash out unless `--folder` names it. Its text output is one message per line: id, account, folder, date, from, to, subject. `read` adds a `Folder:` line, and `--json` carries the folder name as `folder`.
+
+`mark`, `archive`, `spam`, `delete` and `move` report every message they changed as `id<TAB>result`, where the result is `read`, `unread`, `starred`, `unstarred`, `archive`, `spam`, `trash` or the destination folder's name. With `--json` the output is `[{"id":"42","result":"trash"}]`.
+
+`otp`, `link` and `wait` accept `--wait` and its hidden alias `--timeout`. When a wait runs out they say `timed out after 5s; ...`; when no wait was asked for they say `no match since 11:50 (last 10m); widen with --since 24h`. Both exit 2.
+
+The client retries a GET, or a sign-in, once after a second when the network drops the connection (reset, EOF, TLS handshake timeout, i/o timeout, connection refused). Other POSTs are never retried, so a write cannot run twice.
+
+If `list --to` finds nothing, stderr points out that `--to` matches the To header and that `--account` picks a mailbox.
+
+`move --folder` with a name no folder has lists the account's folders, with names and ids, in the error.
 
 ## Use from an agent
 
@@ -113,7 +125,7 @@ gofer-cli link --from no-reply@example.com --wait 60 --match 'https://example.co
 Wait for a message and get the whole thing as JSON:
 
 ```
-gofer-cli wait --from alerts@example.com --timeout 120 --json
+gofer-cli wait --from alerts@example.com --wait 120 --json
 ```
 
 Mark everything that is unread as read:

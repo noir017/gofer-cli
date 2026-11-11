@@ -66,6 +66,43 @@ func (c *Client) Folders(ctx context.Context, accountID string) ([]model.Folder,
 	return folders, nil
 }
 
+// MessageFolder reports the folder a message sits in. Gofer has no endpoint
+// that answers this directly: the Move dialog names the message's own folder
+// by disabling its row, so that page is read.
+func (c *Client) MessageFolder(ctx context.Context, id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", errors.New("message folder: empty message id")
+	}
+	// JoinPath escapes the id as one path segment, so a slash or a question
+	// mark in it cannot change the route.
+	target, err := url.JoinPath(c.base.String(), "email", id, "move")
+	if err != nil {
+		return "", fmt.Errorf("folder of message %s: %w", id, err)
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return "", fmt.Errorf("folder of message %s: %w", id, err)
+	}
+	resp, err := c.doURL(ctx, http.MethodGet, u, nil, "")
+	if err != nil {
+		return "", err
+	}
+	defer closeActionBody(resp)
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", actionStatusError("/email/"+id+"/move", resp)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPageBytes))
+	if err != nil {
+		return "", err
+	}
+	folderID, err := parseMessageFolder(strings.NewReader(string(body)))
+	if err != nil {
+		return "", fmt.Errorf("folder of message %s: %w", id, err)
+	}
+	return folderID, nil
+}
+
 // foldersNotFound explains a 404 on one account's sidebar section. Gofer
 // answers 404 for an account it cannot show, which is the account of a mail
 // sync that is turned off as well as one that does not exist, so the two are

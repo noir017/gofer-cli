@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -33,6 +32,8 @@ func (f *findFlags) register(cmd *cobra.Command) {
 	f.registerLimit(cmd, findLimit)
 	cmd.Flags().DurationVar(&f.since, "since", 10*time.Minute, "only messages newer than this")
 	cmd.Flags().IntVar(&f.wait, "wait", 0, "keep looking for this many seconds")
+	cmd.Flags().IntVar(&f.wait, "timeout", 0, "alias of --wait")
+	_ = cmd.Flags().MarkHidden("timeout")
 }
 
 func (a *App) otpCommand() *cobra.Command {
@@ -97,28 +98,6 @@ func checkRegexp(command, flag, pattern string) error {
 	return nil
 }
 
-// outgoingFolders returns the ids of the folders a message that arrived never
-// sits in: sent and drafts. otp, link and wait look for mail that arrived, so
-// the copy of a message the caller has just sent must not match. Trash is not
-// skipped: verification mail often ends up in spam and is thrown away from
-// there. A failure to list folders is a warning, not an error: the search
-// then simply matches every folder.
-func (a *App) outgoingFolders(ctx context.Context, api API) map[string]bool {
-	folders, err := api.Folders(ctx, "")
-	if err != nil {
-		_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: cannot list folders, sent and draft copies are not skipped: %v\n", err)
-		return nil
-	}
-	ids := make(map[string]bool)
-	for _, folder := range folders {
-		switch strings.ToLower(folder.Role) {
-		case "sent", "drafts":
-			ids[folder.ID] = true
-		}
-	}
-	return ids
-}
-
 // findMessage looks at the messages of the last since, newest first, and
 // returns the first value match finds. With wait > 0 it keeps searching every
 // pollInterval, asking the server to sync every syncInterval, until the wait
@@ -137,7 +116,7 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 	// zone decides which date it is. Ask for one day more and let the exact
 	// cutoff below drop what is older.
 	opts.After = a.Now().In(a.location()).Add(-since).AddDate(0, 0, -1).Format(dateFormat)
-	outgoing := a.outgoingFolders(ctx, api)
+	skip := skippedFolderIDs(a.allFolders(ctx, api))
 	checked := make(map[string]bool)
 	deadline := a.Now().Add(wait)
 	lastSync := a.Now()
@@ -154,8 +133,8 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		for _, ref := range refs {
 			// A conversation row is kept even when its newest message is a
 			// sent copy: the received mail is still in that conversation.
-			if !ref.Thread && outgoing[ref.FolderID] {
-				continue // a sent or draft copy, not mail that arrived
+			if !ref.Thread && skip[ref.FolderID] {
+				continue // a sent, draft or trash copy, not mail that arrived
 			}
 			if checked[ref.ID] {
 				continue
@@ -194,7 +173,28 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		}
 		a.Sleep(pollInterval)
 	}
-	return "", nil, fmt.Errorf("%w: nothing in the last %s", model.ErrNotFound, since)
+	if wait > 0 {
+		return "", nil, notFoundf("timed out after %ds; no match in the last %s",
+			int(wait/time.Second), durationText(since))
+	}
+	return "", nil, notFoundf("no match since %s (last %s); widen with --since 24h",
+		a.Now().Add(-since).In(a.location()).Format("15:04"), durationText(since))
+}
+
+// durationText writes a window the way a person does: 10m, 6h, 90s.
+func durationText(d time.Duration) string {
+	switch {
+	case d > 0 && d%(24*time.Hour) == 0:
+		return fmt.Sprintf("%dh", int(d/(24*time.Hour))*24)
+	case d > 0 && d%time.Hour == 0:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	case d > 0 && d%time.Minute == 0:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d > 0 && d%time.Second == 0:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	default:
+		return d.String()
+	}
 }
 
 type foundJSON struct {
@@ -222,11 +222,11 @@ func (a *App) writeFound(kind, value string, m *model.Message) error {
 
 func (a *App) waitCommand() *cobra.Command {
 	var f filterFlags
-	var timeout int
+	var wait int
 	cmd := &cobra.Command{
 		Use:     "wait",
 		Short:   "Wait for a new message and print it",
-		Example: "  gofer-cli wait --from ci@example.com --timeout 300",
+		Example: "  gofer-cli wait --from ci@example.com --wait 300",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -239,7 +239,9 @@ func (a *App) waitCommand() *cobra.Command {
 				return err
 			}
 			opts := f.options(accountID, 0)
-			outgoing := a.outgoingFolders(ctx, api)
+			folders := a.allFolders(ctx, api)
+			skip := skippedFolderIDs(folders)
+			names := folderNames(folders)
 			refs, err := api.Search(ctx, opts)
 			if err != nil {
 				return err
@@ -249,7 +251,7 @@ func (a *App) waitCommand() *cobra.Command {
 				before[ref.ID] = true
 			}
 			checked := make(map[string]bool)
-			deadline := a.Now().Add(time.Duration(timeout) * time.Second)
+			deadline := a.Now().Add(time.Duration(wait) * time.Second)
 			lastSync := a.Now()
 			_ = api.Sync(ctx, "")
 			for a.Now().Before(deadline) {
@@ -262,8 +264,8 @@ func (a *App) waitCommand() *cobra.Command {
 					// A conversation row is kept even when its newest
 					// message is a sent copy: the received mail is still in
 					// that conversation.
-					if !ref.Thread && outgoing[ref.FolderID] {
-						continue // a sent or draft copy, not mail that arrived
+					if !ref.Thread && skip[ref.FolderID] {
+						continue // a sent, draft or trash copy, not mail that arrived
 					}
 					if before[ref.ID] || checked[ref.ID] {
 						continue
@@ -286,6 +288,10 @@ func (a *App) waitCommand() *cobra.Command {
 					if m.Account == "" {
 						m.Account = ref.Account
 					}
+					if m.FolderID == "" {
+						m.FolderID = ref.FolderID
+					}
+					m.Folder = names[m.FolderID]
 					return a.printMessage(m, false)
 				}
 				if a.Now().Sub(lastSync) >= syncInterval {
@@ -293,10 +299,12 @@ func (a *App) waitCommand() *cobra.Command {
 					lastSync = a.Now()
 				}
 			}
-			return fmt.Errorf("%w: no new message within %s", model.ErrNotFound, time.Duration(timeout)*time.Second)
+			return notFoundf("timed out after %ds; no new message", wait)
 		},
 	}
 	f.registerLimit(cmd, waitLimit)
-	cmd.Flags().IntVar(&timeout, "timeout", 120, "give up after this many seconds")
+	cmd.Flags().IntVar(&wait, "wait", 120, "give up after this many seconds")
+	cmd.Flags().IntVar(&wait, "timeout", 120, "alias of --wait")
+	_ = cmd.Flags().MarkHidden("timeout")
 	return cmd
 }

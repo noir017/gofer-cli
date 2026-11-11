@@ -44,6 +44,7 @@ type API interface {
 	Sync(ctx context.Context, accountID string) error
 	Accounts(ctx context.Context) ([]model.Account, error)
 	Folders(ctx context.Context, accountID string) ([]model.Folder, error)
+	MessageFolder(ctx context.Context, id string) (string, error)
 	Send(ctx context.Context, req client.SendRequest) error
 }
 
@@ -140,6 +141,19 @@ func exitCode(err error) int {
 	}
 }
 
+// notFoundError is a not-found failure that says what happened in its own
+// words. The exit code already carries the "not found" part, so the message
+// need not start with it.
+type notFoundError struct{ message string }
+
+func (e notFoundError) Error() string { return e.message }
+
+func (e notFoundError) Is(target error) bool { return target == model.ErrNotFound }
+
+func notFoundf(format string, args ...any) error {
+	return notFoundError{message: fmt.Sprintf(format, args...)}
+}
+
 func stdinIsTerminal() bool {
 	info, err := os.Stdin.Stat()
 	if err != nil {
@@ -156,14 +170,23 @@ func (a *App) connect() (API, error) {
 	}
 	cfg, err := a.loadConfig()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", model.ErrConfig, err)
+		return nil, configError(err)
 	}
 	c, err := a.newClient(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", model.ErrConfig, err)
+		return nil, configError(err)
 	}
 	a.API = c
 	return c, nil
+}
+
+// configError marks err as a configuration problem unless it already is one.
+// Wrapping twice would print "not configured: not configured:".
+func configError(err error) error {
+	if errors.Is(err, model.ErrConfig) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", model.ErrConfig, err)
 }
 
 func (a *App) root() *cobra.Command {
@@ -195,9 +218,9 @@ func (a *App) root() *cobra.Command {
 		a.attachmentsCommand(),
 		a.saveCommand(),
 		a.markCommand(),
-		a.actionCommand("archive <id>... | -", "Move messages out of the inbox", "  gofer-cli archive 42 43", client.ActArchive),
-		a.actionCommand("spam <id>... | -", "Mark messages as spam", "  gofer-cli spam 42", client.ActSpam),
-		a.actionCommand("delete <id>... | -", "Move messages to the trash", "  gofer-cli delete 42", client.ActDelete),
+		a.actionCommand("archive <id>... | -", "Move messages out of the inbox", "  gofer-cli archive 42 43", "archive", client.ActArchive),
+		a.actionCommand("spam <id>... | -", "Mark messages as spam", "  gofer-cli spam 42", "spam", client.ActSpam),
+		a.actionCommand("delete <id>... | -", "Move messages to the trash", "  gofer-cli delete 42", "trash", client.ActDelete),
 		a.moveCommand(),
 		a.sendCommand(),
 		a.replyCommand(),
@@ -230,6 +253,29 @@ func (a *App) done(note string) error {
 	}
 	if note != "" {
 		_, _ = fmt.Fprintln(a.Stderr, note)
+	}
+	return nil
+}
+
+// actionResult is one line of a bulk command: the message and what happened
+// to it, in the words the command line uses (trash, archive, a folder name).
+type actionResult struct {
+	ID     string `json:"id"`
+	Result string `json:"result"`
+}
+
+// writeResults reports every message a bulk command changed: one line of
+// "id<TAB>result" in text, an array of objects with --json.
+func (a *App) writeResults(ids []string, result string) error {
+	rows := make([]actionResult, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, actionResult{ID: id, Result: result})
+	}
+	if a.flags.json {
+		return a.writeJSON(rows)
+	}
+	for _, row := range rows {
+		_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\n", cleanText(row.ID), cleanText(row.Result))
 	}
 	return nil
 }

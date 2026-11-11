@@ -20,21 +20,33 @@ const (
 )
 
 // searchMessages runs the search and reads every hit, at most fetchWorkers at
-// a time, keeping the order the server returned.
+// a time, keeping the order the server returned. Trash is dropped unless
+// --folder asked for it, and every row is given its folder name.
 func (a *App) searchMessages(ctx context.Context, f filterFlags) ([]model.Message, error) {
 	api, err := a.connect()
 	if err != nil {
 		return nil, err
 	}
-	accountID, err := a.resolveAccount(ctx, api, f.account)
+	opts, folders, err := a.prepareSearch(ctx, api, f, 0)
 	if err != nil {
 		return nil, err
 	}
-	refs, err := api.Search(ctx, f.options(accountID, 0))
+	refs, err := api.Search(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	return a.fetchAll(ctx, api, refs)
+	if len(opts.FolderIDs) == 0 {
+		refs = withoutTrash(refs, folders)
+	}
+	msgs, err := a.fetchAll(ctx, api, refs)
+	if err != nil {
+		return nil, err
+	}
+	names := folderNames(folders)
+	for i := range msgs {
+		msgs[i].Folder = names[msgs[i].FolderID]
+	}
+	return msgs, nil
 }
 
 // fetchAll reads every ref and drops the ones that fail, with a line on
@@ -162,9 +174,14 @@ func (a *App) writeList(msgs []model.Message) error {
 	}
 	for i := range msgs {
 		m := &msgs[i]
-		_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		folder := m.Folder
+		if folder == "" {
+			folder = m.FolderID
+		}
+		_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			m.ID,
 			oneLine(m.Account),
+			oneLine(folder),
 			a.displayTime(m.Date),
 			oneLine(firstAddress(m.From)),
 			oneLine(formatAddresses(m.To)),
@@ -212,6 +229,13 @@ func listJSON(msgs []model.Message) ([]map[string]any, error) {
 func (a *App) writeMessage(m *model.Message) error {
 	w := a.Stdout
 	_, _ = fmt.Fprintf(w, "ID: %s\n", cleanText(m.ID))
+	folder := m.Folder
+	if folder == "" {
+		folder = m.FolderID
+	}
+	if folder != "" {
+		_, _ = fmt.Fprintf(w, "Folder: %s\n", cleanText(folder))
+	}
 	if s := formatAddresses(m.From); s != "" {
 		_, _ = fmt.Fprintf(w, "From: %s\n", s)
 	}
@@ -239,8 +263,9 @@ func (a *App) writeMessage(m *model.Message) error {
 }
 
 // printRef writes one message by reference. --raw goes to stdout exactly as
-// received, without parsing.
-func (a *App) printRef(ctx context.Context, api API, ref model.MessageRef, raw, html bool) error {
+// received, without parsing. names maps folder ids to names; when the
+// message's folder is still unknown (read by id) the server is asked.
+func (a *App) printRef(ctx context.Context, api API, ref model.MessageRef, raw, html bool, names map[string]string) error {
 	if raw {
 		src, err := api.Source(ctx, ref.ID)
 		if err != nil {
@@ -253,7 +278,22 @@ func (a *App) printRef(ctx context.Context, api API, ref model.MessageRef, raw, 
 	if err != nil {
 		return err
 	}
+	a.nameFolder(ctx, api, m, names)
 	return a.printMessage(m, html)
+}
+
+// nameFolder fills in the folder id and name of a message. A read by id has
+// no folder id: gofer only reports it in the message's Move dialog.
+func (a *App) nameFolder(ctx context.Context, api API, m *model.Message, names map[string]string) {
+	if m.FolderID == "" {
+		id, err := api.MessageFolder(ctx, m.ID)
+		if err != nil {
+			_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: cannot tell the folder of message %s: %v\n", m.ID, err)
+			return
+		}
+		m.FolderID = id
+	}
+	m.Folder = names[m.FolderID]
 }
 
 // printMessage writes a parsed message the way read and latest do.

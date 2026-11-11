@@ -8,12 +8,16 @@ package client
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/noir017/gofer-cli/internal/config"
@@ -40,6 +44,8 @@ type Client struct {
 
 	// now is the clock used for TOTP codes; tests replace it.
 	now func() time.Time
+	// sleep waits before a retry; tests replace it.
+	sleep func(time.Duration)
 }
 
 // New returns a client for cfg. It does not touch the network.
@@ -67,7 +73,8 @@ func New(cfg config.Config) (*Client, error) {
 			},
 			Timeout: 2 * time.Minute,
 		},
-		now: time.Now,
+		now:   time.Now,
+		sleep: time.Sleep,
 	}
 	if cfg.CacheDir != "" {
 		if saved, err := loadSession(cfg.CacheDir, cfg.URL, cfg.User); err == nil {
@@ -134,8 +141,25 @@ func (c *Client) urlFor(path string, query url.Values) *url.URL {
 }
 
 // request sends one request without any sign-in logic. extra headers are
-// added on top of the defaults.
+// added on top of the defaults. A GET that fails on the network is retried
+// once after retryDelay: reads are safe to repeat, and a dropped connection
+// is usually gone by the next attempt.
 func (c *Client) request(ctx context.Context, method string, target *url.URL, body []byte, contentType, cookie string, extra http.Header) (*http.Response, error) {
+	return c.requestAttempt(ctx, method, target, body, contentType, cookie, extra, method == http.MethodGet)
+}
+
+// requestAttempt is request with the retry decision made by the caller:
+// sign-in is a POST, but retrying it is safe and useful.
+func (c *Client) requestAttempt(ctx context.Context, method string, target *url.URL, body []byte, contentType, cookie string, extra http.Header, retry bool) (*http.Response, error) {
+	resp, err := c.requestOnce(ctx, method, target, body, contentType, cookie, extra)
+	if err == nil || !retry || ctx.Err() != nil || !transient(err) {
+		return resp, err
+	}
+	c.sleep(retryDelay)
+	return c.requestOnce(ctx, method, target, body, contentType, cookie, extra)
+}
+
+func (c *Client) requestOnce(ctx context.Context, method string, target *url.URL, body []byte, contentType, cookie string, extra http.Header) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -158,6 +182,37 @@ func (c *Client) request(ctx context.Context, method string, target *url.URL, bo
 		}
 	}
 	return c.http.Do(req)
+}
+
+// retryDelay is how long the client waits before its one retry.
+const retryDelay = time.Second
+
+// transient reports whether err is a network failure that a second attempt
+// can cure: the connection was refused, reset or timed out, or the server
+// closed it without an answer. A refusal by the server itself is not
+// transient; it is an answer.
+func transient(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// Wrapped errors do not always keep a type or errno that errors.Is can
+	// see, so the messages net/http and crypto/tls use are matched too.
+	message := strings.ToLower(err.Error())
+	for _, fragment := range []string{"connection reset", "connection refused", "tls handshake timeout", "i/o timeout"} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) sessionToken() string {

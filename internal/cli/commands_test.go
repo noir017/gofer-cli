@@ -18,8 +18,9 @@ import (
 
 func TestListTextOutput(t *testing.T) {
 	api := &fakeAPI{
-		refs:    []model.MessageRef{{ID: "1", Account: "acc-1"}},
+		refs:    []model.MessageRef{{ID: "1", Account: "acc-1", FolderID: "f1"}},
 		sources: map[string][]byte{"1": []byte("1")},
+		folders: []model.Folder{{ID: "f1", Name: "Inbox", Role: "inbox"}},
 	}
 	e := newEnv(t, api)
 	e.app.Parse = func([]byte) (*model.Message, error) {
@@ -34,7 +35,7 @@ func TestListTextOutput(t *testing.T) {
 	if code := e.run("list"); code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
 	}
-	want := "1\tacc-1\t2026-11-11 09:30\tAna <ana@example.com>\tme@example.com\tHello\n"
+	want := "1\tacc-1\tInbox\t2026-11-11 09:30\tAna <ana@example.com>\tme@example.com\tHello\n"
 	if got := e.out.String(); got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
@@ -176,7 +177,7 @@ func TestListKeepsServerOrder(t *testing.T) {
 	for _, id := range []string{"1", "2", "3", "4", "5", "6"} {
 		api.refs = append(api.refs, model.MessageRef{ID: id})
 		api.sources[id] = []byte(id)
-		want.WriteString(id + "\t\t0001-01-01 00:00\t\t\t\n")
+		want.WriteString(id + "\t\t\t0001-01-01 00:00\t\t\t\n")
 	}
 	e := newEnv(t, api)
 	e.app.Parse = func(raw []byte) (*model.Message, error) {
@@ -238,23 +239,27 @@ func TestReadTextAndJSON(t *testing.T) {
 	}
 }
 
-func TestLatestUsesLimitOne(t *testing.T) {
+func TestLatestSearchesPastTrash(t *testing.T) {
 	api := &fakeAPI{
-		refs:    []model.MessageRef{{ID: "2"}},
-		sources: map[string][]byte{"2": []byte("2")},
+		refs:    []model.MessageRef{{ID: "t", FolderID: "f_trash"}, {ID: "2"}},
+		sources: map[string][]byte{"t": []byte("t"), "2": []byte("2")},
+		folders: []model.Folder{{ID: "f_trash", Role: "trash"}},
 	}
 	e := newEnv(t, api)
-	e.app.Parse = func([]byte) (*model.Message, error) {
-		return &model.Message{Subject: "newest"}, nil
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Subject: string(raw)}, nil
 	}
 	if code := e.run("latest"); code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
 	}
-	if got := api.searches[0].Limit; got != 1 {
-		t.Fatalf("limit = %d, want 1", got)
+	if got := api.searches[0].Limit; got != findLimit {
+		t.Fatalf("limit = %d, want %d, so trash rows can be skipped", got, findLimit)
 	}
-	if !strings.Contains(e.out.String(), "Subject: newest") {
-		t.Fatalf("stdout = %q", e.out.String())
+	if got := api.sourceCalls.Load(); got != 1 {
+		t.Errorf("source reads = %d, want the trash row left unread", got)
+	}
+	if !strings.Contains(e.out.String(), "Subject: 2") {
+		t.Fatalf("stdout = %q, want the newest message outside trash", e.out.String())
 	}
 }
 
@@ -636,7 +641,7 @@ func TestLinkSkipsSentCopies(t *testing.T) {
 	}
 }
 
-func TestOTPKeepsTrashCopies(t *testing.T) {
+func TestOTPSkipsTrashCopies(t *testing.T) {
 	api := arrivalAPI()
 	api.refs = []model.MessageRef{{ID: "trash", FolderID: "f_trash"}}
 	api.sources["trash"] = []byte("trash")
@@ -645,11 +650,11 @@ func TestOTPKeepsTrashCopies(t *testing.T) {
 		return &model.Message{Date: e.clock.t, Subject: string(raw)}, nil
 	}
 	e.app.OTP = func(m *model.Message, _ string) (string, bool) { return "482913", true }
-	if code := e.run("otp"); code != 0 {
-		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	if code := e.run("otp"); code != 2 {
+		t.Fatalf("exit = %d, want 2: a message in Trash is not mail that arrived", code)
 	}
-	if got := e.out.String(); got != "482913\n" {
-		t.Fatalf("stdout = %q, want the message in Trash to match", got)
+	if got := api.sourceCalls.Load(); got != 0 {
+		t.Fatalf("source reads = %d, want the trash copy skipped", got)
 	}
 }
 
@@ -973,7 +978,7 @@ func TestListSkipsUnreadableMessage(t *testing.T) {
 	if code := e.run("list"); code != 0 {
 		t.Fatalf("exit = %d, want 0: %s", code, e.errOut)
 	}
-	if got := e.out.String(); got != "1\t\t0001-01-01 00:00\t\t\t1\n" {
+	if got := e.out.String(); got != "1\t\t\t0001-01-01 00:00\t\t\t1\n" {
 		t.Fatalf("stdout = %q, want only the readable message", got)
 	}
 	if !strings.Contains(e.errOut.String(), "skipping message 2") {

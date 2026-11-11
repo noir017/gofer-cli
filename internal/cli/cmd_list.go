@@ -15,8 +15,11 @@ import (
 func (a *App) listCommand() *cobra.Command {
 	var f filterFlags
 	cmd := &cobra.Command{
-		Use:     "list",
-		Short:   "List messages, newest first",
+		Use:   "list",
+		Short: "List messages, newest first",
+		Long: "List messages, newest first.\n\n" +
+			"Text columns: id, account, folder, date, from, to, subject.\n" +
+			"Messages in Trash are left out unless --folder names it.",
 		Example: "  gofer-cli list --from alerts@example.com --unread --limit 5",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -24,10 +27,15 @@ func (a *App) listCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if len(msgs) == 0 && f.to != "" {
+				_, _ = fmt.Fprintln(a.Stderr, "gofer-cli: --to matches the To header; to pick a mailbox use --account <email>")
+			}
 			return a.writeList(msgs)
 		},
 	}
 	f.register(cmd)
+	f.registerFolder(cmd)
+	f.registerAttachments(cmd)
 	return cmd
 }
 
@@ -46,7 +54,11 @@ func (a *App) readCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.printRef(cmd.Context(), api, model.MessageRef{ID: args[0]}, raw, html)
+			var names map[string]string
+			if !raw {
+				names = folderNames(a.allFolders(cmd.Context(), api))
+			}
+			return a.printRef(cmd.Context(), api, model.MessageRef{ID: args[0]}, raw, html, names)
 		},
 	}
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the message exactly as received")
@@ -71,21 +83,25 @@ func (a *App) latestCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			accountID, err := a.resolveAccount(ctx, api, f.account)
+			opts, folders, err := a.prepareSearch(ctx, api, f, findLimit)
 			if err != nil {
 				return err
 			}
-			refs, err := api.Search(ctx, f.options(accountID, 1))
+			refs, err := api.Search(ctx, opts)
 			if err != nil {
 				return err
+			}
+			if len(opts.FolderIDs) == 0 {
+				refs = withoutTrash(refs, folders)
 			}
 			if len(refs) == 0 {
 				return fmt.Errorf("%w: no message matches", model.ErrNotFound)
 			}
-			return a.printRef(ctx, api, refs[0], raw, html)
+			return a.printRef(ctx, api, refs[0], raw, html, folderNames(folders))
 		},
 	}
 	f.register(cmd)
+	f.registerFolder(cmd)
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the message exactly as received")
 	cmd.Flags().BoolVar(&html, "html", false, "print the HTML part")
 	return cmd
@@ -105,6 +121,9 @@ func (a *App) attachmentsCommand() *cobra.Command {
 			m, _, err := a.fetchMessage(cmd.Context(), api, model.MessageRef{ID: args[0]})
 			if err != nil {
 				return err
+			}
+			if len(m.Attachments) == 0 {
+				_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: message %s has no attachments\n", m.ID)
 			}
 			if a.flags.json {
 				list := m.Attachments
@@ -140,6 +159,9 @@ func (a *App) saveCommand() *cobra.Command {
 			m, src, err := a.fetchMessage(cmd.Context(), api, model.MessageRef{ID: args[0]})
 			if err != nil {
 				return err
+			}
+			if len(m.Attachments) == 0 {
+				return notFoundf("message %s has no attachments", m.ID)
 			}
 			written := make([]string, 0, len(m.Attachments))
 			for _, att := range m.Attachments {

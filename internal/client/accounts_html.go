@@ -115,6 +115,34 @@ func parseSidebarPage(r io.Reader) (sidebarPage, error) {
 	return page, nil
 }
 
+// parseMessageFolder reads the folder a message sits in from its Move dialog.
+// Every folder of the message's account is listed; the message's own folder
+// is the one row the dialog disables. Other accounts' rows may be disabled
+// for their own reasons, so only the source account's rows count.
+func parseMessageFolder(r io.Reader) (string, error) {
+	doc, err := html.Parse(r)
+	if err != nil {
+		return "", err
+	}
+	list := findHTML(doc, func(n *html.Node) bool { return hasAttr(n, "data-mail-move-list") })
+	if list == nil {
+		return "", errors.New("not the move dialog: no element carries data-mail-move-list")
+	}
+	account := attr(list, "data-mail-move-source-account")
+	if account == "" {
+		return "", errors.New("not the move dialog: the list names no source account")
+	}
+	current := findHTML(list, func(n *html.Node) bool {
+		return attr(n, "data-mail-move-folder") != "" &&
+			attr(n, "data-mail-move-account") == account &&
+			hasAttr(n, "disabled")
+	})
+	if current == nil {
+		return "", errors.New("the move dialog marks no current folder")
+	}
+	return attr(current, "data-mail-move-folder"), nil
+}
+
 // composeAccount is one entry of the composer's From menu: an account, with
 // the identities it may also send as.
 type composeAccount struct {
