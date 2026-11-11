@@ -268,9 +268,15 @@ func TestOTPYearNeedsDateContext(t *testing.T) {
 		t.Errorf("OTP = %q, want the year to be ignored", got)
 	}
 
-	m = &model.Message{Subject: "Your code", Text: "Your code 2026. Thanks."}
+	m = &model.Message{Subject: "Your code", Text: "Your code 2026.11 Thanks."}
 	if got, ok := OTP(m, ""); ok {
-		t.Errorf("OTP = %q, want the year before a period to be ignored", got)
+		t.Errorf("OTP = %q, want the year before a decimal to be ignored", got)
+	}
+
+	// A trailing period is not a date separator.
+	m = &model.Message{Subject: "Your code", Text: "Your verification code is 2025."}
+	if got, ok := OTP(m, ""); !ok || got != "2025" {
+		t.Errorf("OTP = %q, %v; want 2025", got, ok)
 	}
 
 	m = &model.Message{Subject: "Your code", Text: "Your code 2026-11-11, use 445566."}
@@ -319,11 +325,62 @@ func TestLinkWordBoundary(t *testing.T) {
 func TestLinkWrappedURL(t *testing.T) {
 	prefix := "https://example.com/account/verify?token="
 	line := prefix + strings.Repeat("a", 78-len(prefix))
-	m := &model.Message{Text: "Click below:\n" + line + "\nb1234567890 to finish."}
-	want := prefix + strings.Repeat("a", 78-len(prefix)) + "b1234567890"
+	m := &model.Message{Text: "Click below:\n" + line + "\n&sig=abc123 to finish."}
+	want := line + "&sig=abc123"
 	got, ok := Link(m, "")
 	if !ok || got != want {
 		t.Errorf("Link = %q, %v; want %q", got, ok, want)
+	}
+}
+
+func TestLinkWrappedURLRejectsWords(t *testing.T) {
+	url := "https://example.com/verify?t=1"
+	line := "Please open " + strings.Repeat("x", 35) + " " + url
+	if len(line) != 78 {
+		t.Fatalf("test line is %d bytes", len(line))
+	}
+	for _, next := range []string{"Thanks,", "Regards,", "2026-11-11"} {
+		t.Run(next, func(t *testing.T) {
+			m := &model.Message{Text: line + "\n" + next}
+			got, ok := Link(m, "")
+			if !ok || got != url {
+				t.Errorf("Link = %q, %v; want %q", got, ok, url)
+			}
+		})
+	}
+}
+
+func TestLinkUnsubscribeAcrossNewline(t *testing.T) {
+	for _, text := range []string{
+		"Unsubscribe:\nhttps://example.com/u/abc123",
+		"To unsubscribe, click here.\nhttps://example.com/u/abc123",
+	} {
+		if got, ok := Link(&model.Message{Text: text}, ""); ok {
+			t.Errorf("Link(%q) = %q, want no link", text, got)
+		}
+	}
+}
+
+func TestLinkContextIgnoresHelpAndTrack(t *testing.T) {
+	for _, text := range []string{
+		"If you need help, open https://example.com/verify?t=1",
+		"To track your order visit https://example.com/verify?t=1",
+	} {
+		got, ok := Link(&model.Message{Text: text}, "")
+		if !ok || got != "https://example.com/verify?t=1" {
+			t.Errorf("Link(%q) = %q, %v", text, got, ok)
+		}
+	}
+}
+
+func TestLinkCamelCasePath(t *testing.T) {
+	m := &model.Message{HTML: `<html><body>
+		<a href="https://example.com/home">Home</a>
+		<a href="https://example.com/verifyEmail?x=1">Go</a>
+	</body></html>`}
+	got, ok := Link(m, "")
+	if !ok || got != "https://example.com/verifyEmail?x=1" {
+		t.Errorf("Link = %q, %v", got, ok)
 	}
 }
 

@@ -298,14 +298,46 @@ Subject: test
 MIME-Version: 1.0
 Content-Type: multipart/mixed
 
+Content-Type: text/plain
+
 Hello body text
 `)
 	m, err := Parse(raw)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if !strings.Contains(m.Text, "Hello body text") {
-		t.Errorf("Text = %q, want the raw body", m.Text)
+	if m.Text != "Hello body text" {
+		t.Errorf("Text = %q, want the part after the last blank line", m.Text)
+	}
+}
+
+func TestParsePrefersBodyWithoutFilename(t *testing.T) {
+	// An inline text part with a filename must not replace the real body.
+	raw := []byte(`From: a@example.com
+To: b@example.com
+Subject: test
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b"
+
+--b
+Content-Type: text/plain; charset=UTF-8
+Content-Disposition: inline; filename="notes.txt"
+
+notes
+
+--b
+Content-Type: text/plain; charset=UTF-8
+
+Real body
+
+--b--
+`)
+	m, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if m.Text != "Real body" {
+		t.Errorf("Text = %q, want the part without a filename", m.Text)
 	}
 }
 

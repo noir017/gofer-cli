@@ -78,6 +78,7 @@ func parse(raw []byte) (*model.Message, []attachment, error) {
 	m.ReplyTo = addressList(h, "Reply-To")
 
 	var plain, htmlBody string
+	var plainHasName, htmlHasName bool
 	var atts []attachment
 
 	// Walk is best effort: a broken part is skipped rather than failing the
@@ -114,11 +115,13 @@ func parse(raw []byte) (*model.Message, []attachment, error) {
 				return nil
 			}
 			if ct == "text/plain" {
-				if plain == "" {
+				if plain == "" || (plainHasName && filename == "") {
 					plain = body
+					plainHasName = filename != ""
 				}
-			} else if htmlBody == "" {
+			} else if htmlBody == "" || (htmlHasName && filename == "") {
 				htmlBody = body
+				htmlHasName = filename != ""
 			}
 			return nil
 		}
@@ -151,7 +154,13 @@ func parse(raw []byte) (*model.Message, []attachment, error) {
 	if walkErr != nil && m.Text == "" && m.HTML == "" && len(atts) == 0 {
 		if broken, _ := message.Read(bytes.NewReader(raw)); broken != nil {
 			if data, err := io.ReadAll(broken.Body); err == nil {
-				m.Text = strings.TrimSpace(strings.ReplaceAll(string(data), "\r\n", "\n"))
+				text := strings.ReplaceAll(string(data), "\r\n", "\n")
+				// The body often starts with the part headers; keep what
+				// follows the last blank line.
+				if i := strings.LastIndex(text, "\n\n"); i >= 0 {
+					text = text[i+2:]
+				}
+				m.Text = strings.TrimSpace(text)
 			}
 		}
 	}

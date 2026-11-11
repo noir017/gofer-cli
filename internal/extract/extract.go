@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
@@ -118,6 +119,10 @@ var (
 		"pixel", "beacon", "open.gif",
 		"退订", "取消订阅", "隐私", "隱私", "帮助", "幫助",
 	}
+	// contextJunkWords are the only words that make a plain-text URL junk
+	// based on the text before it; help, privacy and track are too common in
+	// ordinary sentences.
+	contextJunkWords = []string{"unsubscribe", "opt-out", "optout", "退订", "取消订阅"}
 )
 
 type span struct{ start, end int }
@@ -366,16 +371,29 @@ func inDateContext(text string, start, end int) bool {
 			return true
 		}
 	}
-	if end < len(text) && isDateSeparator(text[end]) {
-		return true
+	if end < len(text) {
+		switch text[end] {
+		case '-', '/':
+			return true
+		case '.':
+			// A period only separates a date when a digit follows.
+			if end+1 < len(text) && isASCIIDigit(text[end+1]) {
+				return true
+			}
+		}
 	}
-	if start > 0 && isDateSeparator(text[start-1]) {
-		return true
+	if start > 0 {
+		switch text[start-1] {
+		case '-', '/':
+			return true
+		case '.':
+			if start >= 2 && isASCIIDigit(text[start-2]) {
+				return true
+			}
+		}
 	}
 	return false
 }
-
-func isDateSeparator(c byte) bool { return c == '-' || c == '/' || c == '.' }
 
 // digitRun counts the digits around a match when they are joined only by
 // phone-number separators.
@@ -527,13 +545,12 @@ type linkCandidate struct {
 }
 
 func linkScore(c linkCandidate) int {
-	u := strings.ToLower(c.url)
 	t := strings.ToLower(c.text)
 	score := 0
 	switch {
-	case hasBoundedAny(u, strongLinkWords):
+	case urlHasAnyWord(c.url, strongLinkWords):
 		score += 100
-	case hasBoundedAny(u, weakLinkWords):
+	case urlHasAnyWord(c.url, weakLinkWords):
 		score += 60
 	}
 	switch {
@@ -546,6 +563,75 @@ func linkScore(c linkCandidate) int {
 		score += 5
 	}
 	return score
+}
+
+// urlHasAnyWord matches keywords against whole path segments and query tokens,
+// and against their camelCase parts, so /verifyEmail counts as "verify".
+func urlHasAnyWord(raw string, words []string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return hasBoundedAny(strings.ToLower(raw), words)
+	}
+	check := func(s string) bool {
+		lower := strings.ToLower(s)
+		for _, w := range words {
+			if lower == w {
+				return true
+			}
+		}
+		for _, tok := range splitCamel(s) {
+			for _, w := range words {
+				if tok == w {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	for _, seg := range strings.Split(u.Path, "/") {
+		if seg != "" && check(seg) {
+			return true
+		}
+	}
+	for key, values := range u.Query() {
+		if check(key) {
+			return true
+		}
+		for _, v := range values {
+			if check(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// splitCamel splits a token on punctuation and camelCase boundaries.
+func splitCamel(s string) []string {
+	runes := []rune(s)
+	var out []string
+	var cur []rune
+	flush := func() {
+		if len(cur) > 0 {
+			out = append(out, strings.ToLower(string(cur)))
+			cur = cur[:0]
+		}
+	}
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			flush()
+			continue
+		}
+		if unicode.IsUpper(r) && i > 0 {
+			prev := runes[i-1]
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				flush()
+			}
+		}
+		cur = append(cur, r)
+	}
+	flush()
+	return out
 }
 
 func hasBoundedAny(s string, words []string) bool {
@@ -563,13 +649,21 @@ func hasBoundedWord(s, word string) bool {
 
 // junkLink rejects unsubscribe, privacy and help links. URLs are matched by
 // path segment or query token, so "help-center/verify" is not a help link;
-// text is matched by word, so "authors" is not "auth".
+// text is matched by word, so "authors" is not "auth". The surrounding
+// context only counts for unsubscribe-like words.
 func junkLink(c linkCandidate) bool {
 	if urlHasJunk(c.url) {
 		return true
 	}
-	s := strings.ToLower(c.text + " " + c.context)
-	for _, w := range junkWords {
+	if textHasJunk(c.text, junkWords) {
+		return true
+	}
+	return textHasJunk(c.context, contextJunkWords)
+}
+
+func textHasJunk(s string, words []string) bool {
+	s = strings.ToLower(s)
+	for _, w := range words {
 		if isASCIIWord(w) {
 			if hasBoundedWord(s, w) {
 				return true
@@ -744,40 +838,59 @@ func joinWrappedURLs(text string) string {
 	return strings.Join(lines, "\n")
 }
 
+// urlContinuation reports whether a token can be the rest of a wrapped URL.
+// It must look like URL material (a query or encoding character) and must not
+// be a word ending in punctuation or a date.
 func urlContinuation(s string) bool {
 	if len(s) < 4 {
 		return false
 	}
-	mark := false
-	digit := false
+	if !strings.ContainsAny(s, "=%&") {
+		return false
+	}
+	if strings.ContainsAny(s[len(s)-1:], ",.;:") {
+		return false
+	}
+	if reDateToken.MatchString(s) {
+		return false
+	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case c >= '0' && c <= '9':
-			digit = true
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 		case c == '-' || c == '.' || c == '_' || c == '~' || c == ':' || c == '/' ||
 			c == '?' || c == '#' || c == '[' || c == ']' || c == '@' || c == '!' ||
 			c == '$' || c == '&' || c == '\'' || c == '(' || c == ')' || c == '*' ||
 			c == '+' || c == ',' || c == ';' || c == '=' || c == '%':
-			mark = true
 		default:
 			return false
 		}
 	}
-	return digit || mark
+	return true
 }
 
-// lastClause keeps the part of the context after the last sentence break, so
-// an "unsubscribe" earlier in the paragraph does not taint a verify URL.
+var reDateToken = regexp.MustCompile(`^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$|^\d{1,2}[-/.]\d{1,2}[-/.]\d{4}$`)
+
+// lastClause keeps the part of the context after the last sentence end, so an
+// "unsubscribe" earlier in the paragraph does not taint a verify URL. Only
+// 。！？!? and a period followed by a space end a sentence; a newline or a
+// semicolon does not. An empty result falls back to the whole window.
 func lastClause(s string) string {
-	cut := strings.LastIndexAny(s, "。！？；!?;\n")
-	if j := strings.LastIndex(s, ". "); j > cut {
-		cut = j
+	cut := -1
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == '。' || r == '！' || r == '？' || r == '!' || r == '?':
+			cut = i + size
+		case r == '.' && i+size < len(s) && s[i+size] == ' ':
+			cut = i + size
+		}
+		i += size
 	}
-	if cut >= 0 {
-		_, size := utf8.DecodeRuneInString(s[cut:])
-		return s[cut+size:]
+	if cut > 0 {
+		if rest := s[cut:]; strings.TrimSpace(rest) != "" {
+			return rest
+		}
 	}
 	return s
 }
