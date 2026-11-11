@@ -63,8 +63,14 @@ func OTP(m *model.Message, pattern string) (string, bool) {
 			if code, ok := matchOne(re, text); ok {
 				return code, true
 			}
+			// The scanner reads width-normalized text, so the message may
+			// hold full-width forms the pattern was not written with.
+			normalizedText := normalizeWidth(text)
+			if code, ok := matchOne(re, normalizedText); ok {
+				return code, true
+			}
 			if normalized != nil {
-				return matchOne(normalized, normalizeWidth(text))
+				return matchOne(normalized, normalizedText)
 			}
 			return "", false
 		}

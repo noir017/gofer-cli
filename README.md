@@ -102,7 +102,7 @@ Read the verification code from a fresh email, waiting up to a minute for it:
 gofer-cli otp --from no-reply@example.com --subject "Sign in" --since 5m --wait 60
 ```
 
-`--pattern` filters the codes the client extracts: only a code that matches the regexp is printed. A pattern with a capture group is matched against the message text instead, and the group is the code.
+`--pattern` filters the codes the client extracts: only a matching code is printed. When no extracted code matches, the pattern is searched in the message text and the whole match is the code. A pattern with a capture group is searched in the text first, and the group is the code.
 
 Read the link from a fresh email:
 
@@ -142,6 +142,9 @@ Tested against Gofer v0.23.0. Gofer is pre-1.0 and changes between releases; oth
 ## Known limitations
 
 With conversation grouping enabled in Gofer, a thread is listed as its newest message only. Such rows carry `"thread": true` in JSON output.
+
+- `wait` can take the conversation your just-sent reply belongs to as a new message.
+- A verification code in an earlier message of a conversation cannot be read: only the newest message is listed.
 
 ## How it works
 

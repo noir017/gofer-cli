@@ -93,6 +93,28 @@ func TestOTPPatternPrefersTheScannedCode(t *testing.T) {
 	}
 }
 
+func TestOTPPatternWidthForms(t *testing.T) {
+	// The message and the pattern may disagree on character width; each
+	// side is tried in both forms.
+	tests := []struct {
+		name    string
+		text    string
+		pattern string
+	}{
+		{"full-width text, ascii pattern", "验证码：482913", `验证码:(\d{6})`},
+		{"full-width digits, group", "４８２９１３", `(\d{6})`},
+		{"full-width digits, no group", "４８２９１３", `\d{6}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := OTP(&model.Message{Text: tt.text}, tt.pattern)
+			if !ok || got != "482913" {
+				t.Errorf("OTP(%q, %q) = %q, %v; want 482913, true", tt.text, tt.pattern, got, ok)
+			}
+		})
+	}
+}
+
 func TestOTPPatternIsWidthNormalized(t *testing.T) {
 	// The pattern is written with a full-width colon and the text with an
 	// ASCII one; normalizing both makes them meet.

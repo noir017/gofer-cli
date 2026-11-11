@@ -102,7 +102,7 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 gofer-cli otp --from no-reply@example.com --subject "Sign in" --since 5m --wait 60
 ```
 
-`--pattern` 在客户端提取出的候选码里筛选，只有匹配的码才输出；带捕获组的正则改为直接在正文里匹配，取第一组作为验证码。
+`--pattern` 先在客户端提取出的候选码里筛选，只有匹配的码才输出；候选码都不匹配时，再拿 pattern 直接在正文里找，整段匹配即验证码。带捕获组的正则则先在正文里找，取第一组作为验证码。
 
 从新邮件里取链接：
 
@@ -142,6 +142,9 @@ gofer-cli list --unread --limit 100 | gofer-cli mark read -
 ## 已知限制
 
 Gofer 开着「按会话分组」时，一个会话只列出其中最新的一封。这类条目在 JSON 输出里带 `"thread": true` 标记。
+
+- `wait` 可能把你刚发出的回复所在的会话当成新邮件。
+- 验证码如果在会话里较早的那封邮件中，取不到。
 
 ## 工作原理
 
