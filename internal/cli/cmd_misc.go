@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -98,7 +99,13 @@ func (a *App) doctorCommand() *cobra.Command {
 				if cerr != nil {
 					fail("server", cerr)
 				} else if info, ierr := api.Info(ctx); ierr != nil {
-					fail("server", ierr)
+					// Info signs in for its probe. A refused sign-in is a
+					// login problem, not an unreachable server.
+					if errors.Is(ierr, model.ErrAuth) {
+						fail("login", ierr)
+					} else {
+						fail("server", ierr)
+					}
 				} else {
 					pass("server", strings.TrimSpace(displayURL(info.URL)+" "+info.Version))
 					if lerr := api.Login(ctx); lerr != nil {

@@ -132,6 +132,7 @@ func newEnv(t *testing.T, api API) *env {
 	e.app.StdinIsTerminal = func() bool { return true }
 	e.app.Now = clock.Now
 	e.app.Sleep = clock.Sleep
+	e.app.Location = time.UTC
 	e.app.Version = "test"
 	e.app.Parse = func([]byte) (*model.Message, error) {
 		return nil, errors.New("test did not set Parse")

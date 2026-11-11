@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/noir017/gofer-cli/internal/client"
 	"github.com/noir017/gofer-cli/internal/model"
@@ -97,6 +98,7 @@ func (a *App) fetchMessage(ctx context.Context, api API, ref model.MessageRef) (
 		return nil, nil, fmt.Errorf("parse message %s: %w", ref.ID, err)
 	}
 	m.ID = ref.ID
+	m.Thread = ref.Thread
 	if m.Account == "" {
 		m.Account = ref.Account
 	}
@@ -163,13 +165,24 @@ func (a *App) writeList(msgs []model.Message) error {
 		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			m.ID,
 			oneLine(m.Account),
-			m.Date.Format(dateTimeFormat),
+			a.displayTime(m.Date),
 			oneLine(firstAddress(m.From)),
 			oneLine(formatAddresses(m.To)),
 			oneLine(m.Subject),
 		)
 	}
 	return nil
+}
+
+// displayTime shows a date the way a mail client does, in the reader's zone.
+// Gofer stamps its own outgoing mail in UTC, and a bare "07:38" for a message
+// that arrived at 15:38 reads as the wrong time.
+func (a *App) displayTime(t time.Time) string {
+	loc := a.Location
+	if loc == nil {
+		loc = time.Local
+	}
+	return t.In(loc).Format(dateTimeFormat)
 }
 
 // listJSON drops Text and HTML: a listing only needs the headers.
@@ -204,7 +217,7 @@ func (a *App) writeMessage(m *model.Message) error {
 		fmt.Fprintf(w, "Cc: %s\n", s)
 	}
 	if !m.Date.IsZero() {
-		fmt.Fprintf(w, "Date: %s\n", m.Date.Format(dateTimeFormat))
+		fmt.Fprintf(w, "Date: %s\n", a.displayTime(m.Date))
 	}
 	fmt.Fprintf(w, "Subject: %s\n", cleanText(m.Subject))
 	fmt.Fprintln(w)

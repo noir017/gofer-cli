@@ -42,6 +42,7 @@ type Message struct {
 	ID          string       `json:"id"` // gofer's id, set by the caller
 	Account     string       `json:"account,omitempty"`
 	FolderID    string       `json:"folder_id,omitempty"`
+	Thread      bool         `json:"thread,omitempty"`     // the row stands for a conversation
 	MessageID   string       `json:"message_id,omitempty"` // Message-ID header
 	InReplyTo   string       `json:"in_reply_to,omitempty"`
 	Date        time.Time    `json:"date"`

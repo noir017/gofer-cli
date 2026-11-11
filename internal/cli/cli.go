@@ -58,6 +58,7 @@ type App struct {
 	Link            func(*model.Message, string) (string, bool)
 	Now             func() time.Time
 	Sleep           func(time.Duration)
+	Location        *time.Location // where text output shows dates; nil = local time
 	Stdin           io.Reader
 	Stdout          io.Writer
 	Stderr          io.Writer

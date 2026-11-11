@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,6 +43,9 @@ func (a *App) otpCommand() *cobra.Command {
 		Example: "  gofer-cli otp --from no-reply@example.com --wait 60",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := checkRegexp("otp", "--pattern", pattern); err != nil {
+				return err
+			}
 			code, m, err := a.findMessage(cmd.Context(), f.filterFlags, f.since, time.Duration(f.wait)*time.Second,
 				func(m *model.Message) (string, bool) { return a.OTP(m, pattern) })
 			if err != nil {
@@ -64,6 +68,9 @@ func (a *App) linkCommand() *cobra.Command {
 		Example: "  gofer-cli link --from no-reply@example.com --wait 60",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := checkRegexp("link", "--match", match); err != nil {
+				return err
+			}
 			link, m, err := a.findMessage(cmd.Context(), f.filterFlags, f.since, time.Duration(f.wait)*time.Second,
 				func(m *model.Message) (string, bool) { return a.Link(m, match) })
 			if err != nil {
@@ -75,6 +82,18 @@ func (a *App) linkCommand() *cobra.Command {
 	f.register(cmd)
 	cmd.Flags().StringVar(&match, "match", "", "regexp the link must match")
 	return cmd
+}
+
+// checkRegexp rejects a flag value that is not a valid regexp before any mail
+// is read, so a typo is reported as a usage error instead of "nothing found".
+func checkRegexp(command, flag, pattern string) error {
+	if pattern == "" {
+		return nil
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("%s: %s: %w", command, flag, err)
+	}
+	return nil
 }
 
 // findMessage looks at the messages of the last since, newest first, and
@@ -122,6 +141,7 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 			}
 			checked[ref.ID] = true
 			m.ID = ref.ID
+			m.Thread = ref.Thread
 			if m.Account == "" {
 				m.Account = ref.Account
 			}
@@ -223,6 +243,7 @@ func (a *App) waitCommand() *cobra.Command {
 					}
 					checked[ref.ID] = true
 					m.ID = ref.ID
+					m.Thread = ref.Thread
 					if m.Account == "" {
 						m.Account = ref.Account
 					}

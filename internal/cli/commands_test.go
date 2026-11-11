@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,47 @@ func TestListJSONOmitsBody(t *testing.T) {
 	}
 	if rows[0]["id"] != "1" || rows[0]["subject"] != "Hello" {
 		t.Errorf("row = %v", rows[0])
+	}
+}
+
+func TestListShowsDatesInLocalZone(t *testing.T) {
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "1"}},
+		sources: map[string][]byte{"1": []byte("1")},
+	}
+	e := newEnv(t, api)
+	e.app.Location = time.FixedZone("CST", 8*3600)
+	// Gofer stamps its own outgoing mail in UTC; the listing shows the
+	// reader's zone, not the zone of the header.
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{Date: time.Date(2026, 11, 11, 7, 38, 0, 0, time.UTC)}, nil
+	}
+	if code := e.run("list"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); !strings.Contains(got, "2026-11-11 15:38") {
+		t.Fatalf("stdout = %q, want the date in the local zone", got)
+	}
+}
+
+func TestListJSONMarksConversationRows(t *testing.T) {
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "1", Thread: true}},
+		sources: map[string][]byte{"1": []byte("1")},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{Subject: "Hello"}, nil
+	}
+	if code := e.run("list", "--json"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(e.out.Bytes(), &rows); err != nil {
+		t.Fatalf("stdout is not JSON: %v", err)
+	}
+	if len(rows) != 1 || rows[0]["thread"] != true {
+		t.Fatalf("rows = %v, want the conversation row marked thread", rows)
 	}
 }
 
@@ -467,6 +509,32 @@ func TestOTPJSON(t *testing.T) {
 	}
 }
 
+func TestOTPAndLinkRejectInvalidRegexp(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		flag string
+	}{
+		{"otp pattern", []string{"otp", "--pattern", "("}, "--pattern"},
+		{"link match", []string{"link", "--match", "["}, "--match"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &fakeAPI{}
+			e := newEnv(t, api)
+			if code := e.run(tc.args...); code != 1 {
+				t.Fatalf("exit = %d, want 1", code)
+			}
+			if got := e.errOut.String(); !strings.Contains(got, tc.flag) {
+				t.Fatalf("stderr = %q, want it to name %s", got, tc.flag)
+			}
+			if len(api.searches) != 0 {
+				t.Errorf("searches = %d, want none before the regexp is valid", len(api.searches))
+			}
+		})
+	}
+}
+
 func TestOTPSinceWindow(t *testing.T) {
 	api := &fakeAPI{
 		refs:    []model.MessageRef{{ID: "7"}},
@@ -606,6 +674,24 @@ func TestDoctorConfigFailureExitsThree(t *testing.T) {
 	}
 	if got := e.out.String(); !strings.Contains(got, "FAIL") {
 		t.Fatalf("stdout = %q, want a FAIL line", got)
+	}
+}
+
+func TestDoctorReportsRefusedLoginAsLogin(t *testing.T) {
+	api := &fakeAPI{infoErr: fmt.Errorf("login: invalid credentials: %w", model.ErrAuth)}
+	e := newEnv(t, api)
+	e.app.loadConfig = func() (config.Config, error) {
+		return config.Config{URL: "https://gofer.example.com", User: "me@example.com", Password: "wrong"}, nil
+	}
+	if code := e.run("doctor"); code != 3 {
+		t.Fatalf("exit = %d, want 3", code)
+	}
+	got := e.out.String()
+	if !strings.Contains(got, "login") || !strings.Contains(got, "FAIL") {
+		t.Fatalf("stdout = %q, want a failed login check", got)
+	}
+	if strings.Contains(got, "server") {
+		t.Errorf("stdout = %q, want the refused sign-in not blamed on the server", got)
 	}
 }
 
