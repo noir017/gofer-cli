@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/noir017/gofer-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/noir017/gofer-cli/actions/workflows/ci.yml)
 
-[Gofer](https://github.com/cristianadrielbraun/gofer)（自托管 webmail）的非官方命令行客户端。它按 Gofer 网页的方式访问服务器，面向 agent 和脚本：所有输入来自参数、环境变量或配置文件，结果只写 stdout，诊断只写 stderr，从不交互。
+[Gofer](https://github.com/cristianadrielbraun/gofer)（自托管 webmail）的非官方命令行客户端。它按 Gofer 网页的方式访问服务器，面向 agent 和脚本：所有输入来自参数、环境变量、配置文件或 stdin，结果只写 stdout，诊断只写 stderr，从不交互。
 
 与 Gofer 项目无隶属关系。
 
@@ -39,8 +39,8 @@ gofer-cli read 1234
 | | `GOFER_PASSWORD` | `password` | 密码 |
 | | `GOFER_PASSWORD_CMD` | `password_cmd` | 输出密码的命令，用 `sh -c` 执行，stdout 即密码 |
 | | `GOFER_TOTP_SECRET` | `totp_secret` | 开启两步验证的账号所用的 base32 TOTP 密钥 |
-| `--config` | `GOFER_CONFIG` | | 配置文件路径，默认 `$XDG_CONFIG_HOME/gofer-cli/config.toml` |
-| | `GOFER_CACHE_DIR` | | 会话 cookie 目录，默认 `$XDG_CACHE_HOME/gofer-cli` |
+| `--config` | `GOFER_CONFIG` | | 配置文件，默认在系统配置目录下的 `gofer-cli/config.toml`（Linux 下是 `~/.config` 或 `$XDG_CONFIG_HOME`） |
+| | `GOFER_CACHE_DIR` | | 会话 cookie 目录，默认在系统缓存目录下的 `gofer-cli`（Linux 下是 `~/.cache` 或 `$XDG_CACHE_HOME`） |
 
 配置文件是 TOML：
 
@@ -60,25 +60,27 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 
 优先用 `password_cmd` 而不是 `password`：命令只在需要密码时执行，输出也不会写进配置文件。
 
+`password_cmd` 用 `sh -c` 执行。Windows 上没有 `sh`，请改用 `password`，或自备一个 `sh`。
+
 ## 命令
 
-全局参数：`--url`、`--user`、`--config`、`--json`。加 `--json` 时结果按 JSON 输出。
+全局参数：`--url`、`--user`、`--config`、`--json`。所有命令都支持 `--json`（含 `doctor`），结果按 JSON 输出；`--raw`、`--html` 与 `--json` 同时给会报错。
 
 | 命令 | 作用 |
 | --- | --- |
 | `list [-q 搜索语法] [--to A] [--from A] [--subject S] [--account EMAIL] [--unread] [--limit 20]` | 搜索或列出邮件 |
 | `read <id> [--raw] [--html]` | 输出一封邮件：正文文本（默认）、原始源码或 HTML |
-| `latest [过滤参数]` | 符合条件的最新一封 |
+| `latest [过滤参数] [--raw] [--html]` | 符合条件的最新一封 |
 | `otp [过滤参数] [--since 10m] [--wait 秒] [--pattern 正则]` | 只输出验证码 |
 | `link [过滤参数] [--since 10m] [--wait 秒] [--match 正则]` | 只输出链接 |
-| `wait [过滤参数] [--timeout 120]` | 等一封新邮件，然后按 `read` 输出 |
+| `wait [过滤参数] [--timeout 120]` | 等一封新邮件，然后按 `read` 的文本或 JSON 格式输出 |
 | `attachments <id>` | 列出附件 |
 | `save <id> [--index N] [-o 目录]` | 下载附件，输出写入的路径 |
 | `mark read\|unread\|star\|unstar <id>... \| -` | 改邮件标记；`-` 从 stdin 读 id |
 | `archive \| spam \| delete <id>... \| -` | 移到归档、垃圾邮件或回收站 |
 | `move <id>... --folder 名称或ID` | 移到指定文件夹 |
-| `send --from 账号 --to A[,A] [--cc] [--bcc] --subject S [--body 文本 \| --body-file 文件 \| 标准输入] [--attach 文件]...` | 发信 |
-| `reply <id> [--all] [--body 文本 \| --body-file 文件 \| 标准输入] [--attach 文件]...` | 回复 |
+| `send --to A[,A] [--from 账号] [--subject S] [--cc A[,A]] [--bcc A[,A]] [--body 文本 \| --body-file 文件 \| 标准输入] [--attach 文件]...` | 发信；只有 `--to` 必填 |
+| `reply <id> [--all] [--body 文本 \| --body-file 文件 \| 标准输入] [--attach 文件]...` | 回复；不给 `--from` 时用原邮件所在的账号 |
 | `accounts` | 列出账号 |
 | `folders [--account EMAIL]` | 列出文件夹 |
 | `sync [--account EMAIL]` | 让服务器拉取新邮件 |
@@ -86,7 +88,7 @@ password_cmd = "op read op://private/gofer/password"  # 1Password CLI
 | `doctor` | 检查配置和连通性 |
 | `version` | 输出版本 |
 
-`list`、`latest`、`otp`、`link`、`wait` 共用一套过滤参数：`-q` 用 Gofer 的搜索语法，`--to`、`--from`、`--subject`、`--account`、`--unread` 进一步收窄。
+`list`、`latest`、`otp`、`link`、`wait` 共用一套过滤参数。`--to`、`--from`、`--subject` 是各自独立的筛选条件；`-q` 里可以用和 Gofer 搜索框一样的写法：`from:`、`to:`、`subject:`、`body:`、`after:`、`before:`、`is:unread` 等。
 
 `delete` 只把邮件移到回收站，不永久删除。
 
@@ -126,12 +128,18 @@ gofer-cli list --unread --limit 100 | gofer-cli mark read -
 | --- | --- |
 | 0 | 成功 |
 | 1 | 出错 |
-| 2 | 没找到，或 `--wait` / `--timeout` 超时 |
+| 2 | 没有匹配或等待超时（`latest`、`otp`、`link`、`wait`）；id 不存在（`read`、`save`）；`--account` 或 `--folder` 指定的对象不存在 |
 | 3 | 登录或配置问题 |
+
+`list`、`accounts`、`folders` 结果为空时退出码是 0。
 
 ## 兼容性
 
-测试过的 Gofer 版本是 v0.23.0。Gofer 尚未到 1.0，版本之间会变；其他版本未必不能用，但升级服务器后先跑 `gofer-cli doctor`。
+面向 Gofer v0.23.0。Gofer 尚未到 1.0，版本之间会变；其他版本未必不能用，但升级服务器后先跑 `gofer-cli doctor`。
+
+## 已知限制
+
+Gofer 开着「按会话分组」时，一个会话只列出其中最新的一封。这类条目在 JSON 输出里带 `"thread": true` 标记。
 
 ## 工作原理
 
