@@ -89,7 +89,7 @@ func (a *App) moveCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			folderID, err := a.resolveFolder(cmd.Context(), api, folder)
+			folderID, err := a.resolveFolder(cmd.Context(), api, folder, ids)
 			if err != nil {
 				return err
 			}
@@ -103,7 +103,11 @@ func (a *App) moveCommand() *cobra.Command {
 	return cmd
 }
 
-func (a *App) resolveFolder(ctx context.Context, api API, ref string) (string, error) {
+// resolveFolder turns --folder into a folder id. An id is taken as is; a name
+// is looked up in the account the messages belong to, so two accounts with an
+// Archive folder cannot be confused. A name that still matches more than one
+// folder is refused: the caller has to pass the id.
+func (a *App) resolveFolder(ctx context.Context, api API, ref string, ids []string) (string, error) {
 	folders, err := api.Folders(ctx, "")
 	if err != nil {
 		return "", err
@@ -113,12 +117,31 @@ func (a *App) resolveFolder(ctx context.Context, api API, ref string) (string, e
 			return f.ID, nil
 		}
 	}
+	accountID, err := a.accountForIDs(ctx, api, ids)
+	if err != nil {
+		return "", err
+	}
+	matches := make([]model.Folder, 0, 2)
 	for _, f := range folders {
+		if accountID != "" && f.AccountID != accountID {
+			continue
+		}
 		if strings.EqualFold(f.Name, ref) || strings.EqualFold(f.Path, ref) {
-			return f.ID, nil
+			matches = append(matches, f)
 		}
 	}
-	return "", fmt.Errorf("%w: folder %s", model.ErrNotFound, ref)
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("%w: folder %s", model.ErrNotFound, ref)
+	case 1:
+		return matches[0].ID, nil
+	default:
+		candidates := make([]string, 0, len(matches))
+		for _, f := range matches {
+			candidates = append(candidates, f.ID)
+		}
+		return "", fmt.Errorf("folder name %q matches %d folders; use one of these ids: %s", ref, len(matches), strings.Join(candidates, ", "))
+	}
 }
 
 func (a *App) accountsCommand() *cobra.Command {
@@ -143,7 +166,7 @@ func (a *App) accountsCommand() *cobra.Command {
 				return a.writeJSON(accounts)
 			}
 			for _, acc := range accounts {
-				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", acc.ID, acc.Email, acc.Name, acc.Provider)
+				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", cleanText(acc.ID), cleanText(acc.Email), cleanText(acc.Name), cleanText(acc.Provider))
 			}
 			return nil
 		},
@@ -177,7 +200,7 @@ func (a *App) foldersCommand() *cobra.Command {
 				return a.writeJSON(folders)
 			}
 			for _, f := range folders {
-				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%d\n", f.ID, f.AccountID, f.Name, f.Role, f.Unread)
+				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%d\n", cleanText(f.ID), cleanText(f.AccountID), cleanText(f.Name), cleanText(f.Role), f.Unread)
 			}
 			return nil
 		},
@@ -227,6 +250,9 @@ func (a *App) messageIDs(args []string) ([]string, error) {
 		}
 	}
 	if fromStdin {
+		if a.StdinIsTerminal() {
+			return nil, errors.New("message ids come from stdin, but stdin is a terminal; pass ids or pipe them in")
+		}
 		sc := bufio.NewScanner(a.Stdin)
 		for sc.Scan() {
 			line := strings.TrimSpace(sc.Text())

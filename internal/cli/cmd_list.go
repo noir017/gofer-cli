@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/noir017/gofer-cli/internal/client"
 	"github.com/noir017/gofer-cli/internal/model"
 )
 
@@ -40,23 +39,14 @@ func (a *App) readCommand() *cobra.Command {
 		Example: "  gofer-cli read 42\n  gofer-cli read 42 --raw",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := a.exclusiveOutput(raw, html); err != nil {
+				return err
+			}
 			api, err := a.connect()
 			if err != nil {
 				return err
 			}
-			if raw {
-				src, err := api.Source(cmd.Context(), args[0])
-				if err != nil {
-					return err
-				}
-				_, err = a.Stdout.Write(src)
-				return err
-			}
-			m, src, err := a.fetchMessage(cmd.Context(), api, model.MessageRef{ID: args[0]})
-			if err != nil {
-				return err
-			}
-			return a.printRead(m, src, false, html)
+			return a.printRef(cmd.Context(), api, model.MessageRef{ID: args[0]}, raw, html)
 		},
 	}
 	cmd.Flags().BoolVar(&raw, "raw", false, "print the message exactly as received")
@@ -73,6 +63,9 @@ func (a *App) latestCommand() *cobra.Command {
 		Example: "  gofer-cli latest --from alerts@example.com",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := a.exclusiveOutput(raw, html); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 			api, err := a.connect()
 			if err != nil {
@@ -82,18 +75,14 @@ func (a *App) latestCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			refs, err := api.Search(ctx, searchOptions(f, accountID, 1))
+			refs, err := api.Search(ctx, f.options(accountID, 1))
 			if err != nil {
 				return err
 			}
 			if len(refs) == 0 {
 				return fmt.Errorf("%w: no message matches", model.ErrNotFound)
 			}
-			m, src, err := a.fetchMessage(ctx, api, refs[0])
-			if err != nil {
-				return err
-			}
-			return a.printRead(m, src, raw, html)
+			return a.printRef(ctx, api, refs[0], raw, html)
 		},
 	}
 	f.register(cmd)
@@ -125,7 +114,7 @@ func (a *App) attachmentsCommand() *cobra.Command {
 				return a.writeJSON(list)
 			}
 			for _, att := range m.Attachments {
-				fmt.Fprintf(a.Stdout, "%d\t%s\t%s\t%d\n", att.Index, att.Filename, att.ContentType, att.Size)
+				fmt.Fprintf(a.Stdout, "%d\t%s\t%s\t%d\n", att.Index, cleanText(att.Filename), cleanText(att.ContentType), att.Size)
 			}
 			return nil
 		},
@@ -141,6 +130,9 @@ func (a *App) saveCommand() *cobra.Command {
 		Example: "  gofer-cli save 42 -o /tmp/attachments",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if index < 0 {
+				return fmt.Errorf("save: --index must not be negative")
+			}
 			api, err := a.connect()
 			if err != nil {
 				return err
@@ -149,27 +141,26 @@ func (a *App) saveCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if index > 0 && index > len(m.Attachments) {
-				return fmt.Errorf("%w: message %s has no attachment %d", model.ErrNotFound, m.ID, index)
-			}
 			written := make([]string, 0, len(m.Attachments))
-			for i := range m.Attachments {
-				n := i + 1
-				if index > 0 && n != index {
+			for _, att := range m.Attachments {
+				if index > 0 && att.Index != index {
 					continue
 				}
-				att, data, err := a.AttachmentData(src, n)
+				got, data, err := a.AttachmentData(src, att.Index)
 				if err != nil {
-					return fmt.Errorf("attachment %d of %s: %w", n, m.ID, err)
+					return fmt.Errorf("attachment %d of %s: %w", att.Index, m.ID, err)
 				}
 				if err := os.MkdirAll(dir, 0o755); err != nil {
 					return err
 				}
-				target := filepath.Join(dir, safeFilename(att.Filename, n))
+				target := freePath(dir, safeFilename(got.Filename, got.Index))
 				if err := os.WriteFile(target, data, 0o644); err != nil {
 					return err
 				}
 				written = append(written, target)
+			}
+			if index > 0 && len(written) == 0 {
+				return fmt.Errorf("%w: message %s has no attachment %d", model.ErrNotFound, m.ID, index)
 			}
 			if a.flags.json {
 				return a.writeJSON(struct {
@@ -205,15 +196,24 @@ func safeFilename(name string, index int) string {
 	return name
 }
 
-// searchOptions builds the client options for f; limit 0 means --limit.
-func searchOptions(f filterFlags, accountID string, limit int) client.SearchOptions {
-	if limit == 0 {
-		limit = f.limit
+// freePath returns dir/name, or dir/name-1, dir/name-2 and so on when that
+// file already exists, so a save never overwrites anything.
+func freePath(dir, name string) string {
+	target := filepath.Join(dir, name)
+	if !exists(target) {
+		return target
 	}
-	return client.SearchOptions{
-		Query:     f.searchQuery(),
-		AccountID: accountID,
-		Unread:    f.unread,
-		Limit:     limit,
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	for i := 1; ; i++ {
+		target = filepath.Join(dir, fmt.Sprintf("%s-%d%s", base, i, ext))
+		if !exists(target) {
+			return target
+		}
 	}
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

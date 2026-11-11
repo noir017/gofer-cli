@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 const (
 	dateTimeFormat = "2006-01-02 15:04"
 	fetchWorkers   = 4
+	lookupLimit    = 200
 )
 
 // searchMessages runs the search and reads every hit, at most fetchWorkers at
@@ -27,18 +29,15 @@ func (a *App) searchMessages(ctx context.Context, f filterFlags) ([]model.Messag
 	if err != nil {
 		return nil, err
 	}
-	refs, err := api.Search(ctx, client.SearchOptions{
-		Query:     f.searchQuery(),
-		AccountID: accountID,
-		Unread:    f.unread,
-		Limit:     f.limit,
-	})
+	refs, err := api.Search(ctx, f.options(accountID, 0))
 	if err != nil {
 		return nil, err
 	}
 	return a.fetchAll(ctx, api, refs)
 }
 
+// fetchAll reads every ref and drops the ones that fail, with a line on
+// stderr: one unreadable message must not hide the rest of the listing.
 func (a *App) fetchAll(ctx context.Context, api API, refs []model.MessageRef) ([]model.Message, error) {
 	msgs := make([]model.Message, len(refs))
 	errs := make([]error, len(refs))
@@ -67,12 +66,16 @@ func (a *App) fetchAll(ctx context.Context, api API, refs []model.MessageRef) ([
 	}
 	close(jobs)
 	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
+
+	out := make([]model.Message, 0, len(refs))
+	for i := range refs {
+		if errs[i] != nil {
+			fmt.Fprintf(a.Stderr, "gofer-cli: skipping message %s: %v\n", refs[i].ID, errs[i])
+			continue
 		}
+		out = append(out, msgs[i])
 	}
-	return msgs, nil
+	return out, nil
 }
 
 func (a *App) fetchMessage(ctx context.Context, api API, ref model.MessageRef) (*model.Message, []byte, error) {
@@ -110,6 +113,34 @@ func (a *App) resolveAccount(ctx context.Context, api API, ref string) (string, 
 	return "", fmt.Errorf("%w: account %s", model.ErrNotFound, ref)
 }
 
+// accountForIDs returns the account the messages belong to. It is empty when
+// no id is found; it fails when the ids span more than one account, because a
+// move takes a single folder id.
+func (a *App) accountForIDs(ctx context.Context, api API, ids []string) (string, error) {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	refs, err := api.Search(ctx, client.SearchOptions{Limit: lookupLimit})
+	if err != nil {
+		return "", err
+	}
+	account := ""
+	for _, ref := range refs {
+		if !want[ref.ID] || ref.Account == "" {
+			continue
+		}
+		if account == "" {
+			account = ref.Account
+			continue
+		}
+		if account != ref.Account {
+			return "", errors.New("messages belong to different accounts; move one account at a time")
+		}
+	}
+	return account, nil
+}
+
 func (a *App) writeList(msgs []model.Message) error {
 	if a.flags.json {
 		rows, err := listJSON(msgs)
@@ -120,8 +151,9 @@ func (a *App) writeList(msgs []model.Message) error {
 	}
 	for i := range msgs {
 		m := &msgs[i]
-		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			m.ID,
+			oneLine(m.Account),
 			m.Date.Format(dateTimeFormat),
 			oneLine(firstAddress(m.From)),
 			oneLine(formatAddresses(m.To)),
@@ -152,7 +184,7 @@ func listJSON(msgs []model.Message) ([]map[string]any, error) {
 
 func (a *App) writeMessage(m *model.Message) error {
 	w := a.Stdout
-	fmt.Fprintf(w, "ID: %s\n", m.ID)
+	fmt.Fprintf(w, "ID: %s\n", cleanText(m.ID))
 	if s := formatAddresses(m.From); s != "" {
 		fmt.Fprintf(w, "From: %s\n", s)
 	}
@@ -165,29 +197,43 @@ func (a *App) writeMessage(m *model.Message) error {
 	if !m.Date.IsZero() {
 		fmt.Fprintf(w, "Date: %s\n", m.Date.Format(dateTimeFormat))
 	}
-	fmt.Fprintf(w, "Subject: %s\n", m.Subject)
+	fmt.Fprintf(w, "Subject: %s\n", cleanText(m.Subject))
 	fmt.Fprintln(w)
-	fmt.Fprint(w, strings.TrimRight(m.Text, "\r\n"))
+	fmt.Fprint(w, strings.TrimRight(cleanText(m.Text), "\r\n"))
 	fmt.Fprintln(w)
 	if len(m.Attachments) > 0 {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Attachments:")
 		for _, att := range m.Attachments {
-			fmt.Fprintf(w, "  %d\t%s\t%s\t%d\n", att.Index, att.Filename, att.ContentType, att.Size)
+			fmt.Fprintf(w, "  %d\t%s\t%s\t%d\n", att.Index, cleanText(att.Filename), cleanText(att.ContentType), att.Size)
 		}
 	}
 	return nil
 }
 
-// printRead writes one message the way read and latest do.
-func (a *App) printRead(m *model.Message, src []byte, raw, html bool) error {
+// printRef writes one message by reference. --raw goes to stdout exactly as
+// received, without parsing.
+func (a *App) printRef(ctx context.Context, api API, ref model.MessageRef, raw, html bool) error {
 	if raw {
-		_, err := a.Stdout.Write(src)
+		src, err := api.Source(ctx, ref.ID)
+		if err != nil {
+			return err
+		}
+		_, err = a.Stdout.Write(src)
 		return err
 	}
+	m, _, err := a.fetchMessage(ctx, api, ref)
+	if err != nil {
+		return err
+	}
+	return a.printMessage(m, html)
+}
+
+// printMessage writes a parsed message the way read and latest do.
+func (a *App) printMessage(m *model.Message, html bool) error {
 	if html {
 		if m.HTML == "" {
-			return fmt.Errorf("%w: message %s has no HTML part", model.ErrNotFound, m.ID)
+			return fmt.Errorf("message %s has no HTML part", m.ID)
 		}
 		fmt.Fprint(a.Stdout, m.HTML)
 		if !strings.HasSuffix(m.HTML, "\n") {
@@ -201,14 +247,33 @@ func (a *App) printRead(m *model.Message, src []byte, raw, html bool) error {
 	return a.writeMessage(m)
 }
 
+// exclusiveOutput rejects --raw, --html and --json together.
+func (a *App) exclusiveOutput(raw, html bool) error {
+	n := 0
+	if raw {
+		n++
+	}
+	if html {
+		n++
+	}
+	if a.flags.json {
+		n++
+	}
+	if n > 1 {
+		return errors.New("use only one of --raw, --html and --json")
+	}
+	return nil
+}
+
 func formatAddress(a model.Address) string {
+	name, email := cleanText(a.Name), cleanText(a.Email)
 	switch {
-	case a.Name == "":
-		return a.Email
-	case a.Email == "":
-		return a.Name
+	case name == "":
+		return email
+	case email == "":
+		return name
 	default:
-		return a.Name + " <" + a.Email + ">"
+		return name + " <" + email + ">"
 	}
 }
 
@@ -263,7 +328,21 @@ func without(list, exclude []string) []string {
 	return out
 }
 
+// cleanText drops C0 control characters, keeping tab, newline and carriage
+// return so multi-line text keeps its layout.
+func cleanText(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			return r
+		case r < 0x20 || r == 0x7f:
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // oneLine keeps a value on one tab-separated field.
 func oneLine(s string) string {
-	return strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(s)
+	return strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(cleanText(s))
 }

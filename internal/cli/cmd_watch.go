@@ -14,6 +14,8 @@ import (
 const (
 	pollInterval = 3 * time.Second
 	syncInterval = 15 * time.Second
+	watchLimit   = 200 // otp, link and wait look further back than list
+	dateFormat   = "2006-01-02"
 )
 
 // findFlags are the flags of otp and link: the shared filters plus a time
@@ -25,7 +27,7 @@ type findFlags struct {
 }
 
 func (f *findFlags) register(cmd *cobra.Command) {
-	f.filterFlags.register(cmd)
+	f.filterFlags.registerLimit(cmd, watchLimit)
 	cmd.Flags().DurationVar(&f.since, "since", 10*time.Minute, "only messages newer than this")
 	cmd.Flags().IntVar(&f.wait, "wait", 0, "keep looking for this many seconds")
 }
@@ -77,7 +79,7 @@ func (a *App) linkCommand() *cobra.Command {
 // findMessage looks at the messages of the last since, newest first, and
 // returns the first value match finds. With wait > 0 it keeps searching every
 // pollInterval, asking the server to sync every syncInterval, until the wait
-// budget is spent.
+// budget is spent. Messages already read are not downloaded again.
 func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.Duration, match func(*model.Message) (string, bool)) (string, *model.Message, error) {
 	api, err := a.connect()
 	if err != nil {
@@ -87,7 +89,9 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 	if err != nil {
 		return "", nil, err
 	}
-	opts := searchOptions(f, accountID, 0)
+	opts := f.options(accountID, 0)
+	opts.After = a.Now().Add(-since).Format(dateFormat)
+	checked := make(map[string]bool)
 	deadline := a.Now().Add(wait)
 	lastSync := a.Now()
 	if wait > 0 {
@@ -101,6 +105,9 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		}
 		cutoff := a.Now().Add(-since)
 		for _, ref := range refs {
+			if checked[ref.ID] {
+				continue
+			}
 			raw, err := api.Source(ctx, ref.ID)
 			if err != nil {
 				if errors.Is(err, model.ErrNotFound) {
@@ -108,6 +115,7 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 				}
 				return "", nil, err
 			}
+			checked[ref.ID] = true
 			m, err := a.Parse(raw)
 			if err != nil {
 				continue
@@ -116,8 +124,9 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 			if m.Account == "" {
 				m.Account = ref.Account
 			}
-			if !m.Date.IsZero() && m.Date.Before(cutoff) {
-				break
+			// An undated message is not inside the window.
+			if m.Date.IsZero() || m.Date.Before(cutoff) {
+				continue
 			}
 			if value, ok := match(m); ok {
 				return value, m, nil
@@ -154,7 +163,7 @@ func (a *App) writeFound(kind, value string, m *model.Message) error {
 		}
 		return a.writeJSON(out)
 	}
-	fmt.Fprintln(a.Stdout, value)
+	fmt.Fprintln(a.Stdout, cleanText(value))
 	return nil
 }
 
@@ -176,15 +185,16 @@ func (a *App) waitCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			opts := searchOptions(f, accountID, 0)
+			opts := f.options(accountID, 0)
 			refs, err := api.Search(ctx, opts)
 			if err != nil {
 				return err
 			}
-			seen := make(map[string]bool, len(refs))
+			before := make(map[string]bool, len(refs))
 			for _, ref := range refs {
-				seen[ref.ID] = true
+				before[ref.ID] = true
 			}
+			checked := make(map[string]bool)
 			deadline := a.Now().Add(time.Duration(timeout) * time.Second)
 			lastSync := a.Now()
 			_ = api.Sync(ctx, "")
@@ -195,15 +205,26 @@ func (a *App) waitCommand() *cobra.Command {
 					return err
 				}
 				for _, ref := range refs {
-					if seen[ref.ID] {
+					if before[ref.ID] || checked[ref.ID] {
 						continue
 					}
-					seen[ref.ID] = true
-					m, src, err := a.fetchMessage(ctx, api, ref)
+					raw, err := api.Source(ctx, ref.ID)
+					if err != nil {
+						if errors.Is(err, model.ErrNotFound) {
+							continue
+						}
+						return err
+					}
+					checked[ref.ID] = true
+					m, err := a.Parse(raw)
 					if err != nil {
 						continue
 					}
-					return a.printRead(m, src, false, false)
+					m.ID = ref.ID
+					if m.Account == "" {
+						m.Account = ref.Account
+					}
+					return a.printMessage(m, false)
 				}
 				if a.Now().Sub(lastSync) >= syncInterval {
 					_ = api.Sync(ctx, "")
@@ -213,7 +234,7 @@ func (a *App) waitCommand() *cobra.Command {
 			return fmt.Errorf("%w: no new message within %s", model.ErrNotFound, time.Duration(timeout)*time.Second)
 		},
 	}
-	f.register(cmd)
+	f.registerLimit(cmd, watchLimit)
 	cmd.Flags().IntVar(&timeout, "timeout", 120, "give up after this many seconds")
 	return cmd
 }

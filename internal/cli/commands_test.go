@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ func TestListTextOutput(t *testing.T) {
 	if code := e.run("list"); code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
 	}
-	want := "1\t2026-11-11 09:30\tAna <ana@example.com>\tme@example.com\tHello\n"
+	want := "1\tacc-1\t2026-11-11 09:30\tAna <ana@example.com>\tme@example.com\tHello\n"
 	if got := e.out.String(); got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
@@ -84,7 +85,7 @@ func TestListSearchQuery(t *testing.T) {
 		"--account", "me@example.com",
 		"--unread",
 		"--limit", "7",
-		"-q", "is:unread",
+		"-q", "invoice",
 	)
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
@@ -92,11 +93,19 @@ func TestListSearchQuery(t *testing.T) {
 	if len(api.searches) != 1 {
 		t.Fatalf("searches = %d, want 1", len(api.searches))
 	}
-	want := `to:to@example.com from:from@example.com subject:"hello world" account:me@example.com is:unread`
-	if got := api.searches[0].Query; got != want {
-		t.Fatalf("query = %q, want %q", got, want)
-	}
 	opts := api.searches[0]
+	if opts.Query != "invoice" {
+		t.Errorf("query = %q, want %q", opts.Query, "invoice")
+	}
+	if opts.To != "to@example.com" {
+		t.Errorf("to = %q", opts.To)
+	}
+	if opts.From != "from@example.com" {
+		t.Errorf("from = %q", opts.From)
+	}
+	if opts.Subject != "hello world" {
+		t.Errorf("subject = %q", opts.Subject)
+	}
 	if opts.AccountID != "acc-1" {
 		t.Errorf("account id = %q, want acc-1", opts.AccountID)
 	}
@@ -105,6 +114,9 @@ func TestListSearchQuery(t *testing.T) {
 	}
 	if opts.Limit != 7 {
 		t.Errorf("limit = %d, want 7", opts.Limit)
+	}
+	if opts.After != "" || opts.Before != "" {
+		t.Errorf("after = %q, before = %q, want both empty", opts.After, opts.Before)
 	}
 }
 
@@ -122,7 +134,7 @@ func TestListKeepsServerOrder(t *testing.T) {
 	for _, id := range []string{"1", "2", "3", "4", "5", "6"} {
 		api.refs = append(api.refs, model.MessageRef{ID: id})
 		api.sources[id] = []byte(id)
-		want.WriteString(id + "\t0001-01-01 00:00\t\t\t\n")
+		want.WriteString(id + "\t\t0001-01-01 00:00\t\t\t\n")
 	}
 	e := newEnv(t, api)
 	e.app.Parse = func(raw []byte) (*model.Message, error) {
@@ -267,6 +279,7 @@ func TestMarkReadsIDsFromStdin(t *testing.T) {
 	api := &fakeAPI{}
 	e := newEnv(t, api)
 	e.app.Stdin = strings.NewReader("42\tsome subject\n43 another\n\n")
+	e.app.StdinIsTerminal = func() bool { return false }
 	if code := e.run("mark", "read", "-"); code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
 	}
@@ -687,5 +700,315 @@ func TestSaveOneIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "a.txt")); !os.IsNotExist(err) {
 		t.Fatalf("a.txt should not be written, stat err = %v", err)
+	}
+}
+
+func TestListSkipsUnreadableMessage(t *testing.T) {
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "1"}, {ID: "2"}},
+		sources: map[string][]byte{"1": []byte("1")},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Subject: string(raw)}, nil
+	}
+	if code := e.run("list"); code != 0 {
+		t.Fatalf("exit = %d, want 0: %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "1\t\t0001-01-01 00:00\t\t\t1\n" {
+		t.Fatalf("stdout = %q, want only the readable message", got)
+	}
+	if !strings.Contains(e.errOut.String(), "skipping message 2") {
+		t.Fatalf("stderr = %q, want a skip line", e.errOut.String())
+	}
+}
+
+func TestListFiltersControlCharacters(t *testing.T) {
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "1"}},
+		sources: map[string][]byte{"1": []byte("1")},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{Subject: "bad\x1b[31m\x07 text"}, nil
+	}
+	if code := e.run("list"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if strings.ContainsAny(e.out.String(), "\x1b\x07") {
+		t.Fatalf("stdout still has control characters: %q", e.out.String())
+	}
+	if !strings.Contains(e.out.String(), "bad[31m text") {
+		t.Fatalf("stdout = %q", e.out.String())
+	}
+}
+
+func TestReadRejectsConflictingOutput(t *testing.T) {
+	e := newEnv(t, &fakeAPI{})
+	if code := e.run("read", "9", "--raw", "--json"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(e.errOut.String(), "only one of") {
+		t.Fatalf("stderr = %q", e.errOut.String())
+	}
+}
+
+func TestReadHTMLMissingExitsOne(t *testing.T) {
+	api := &fakeAPI{sources: map[string][]byte{"9": []byte("raw")}}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{Subject: "plain"}, nil
+	}
+	if code := e.run("read", "9", "--html"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(e.errOut.String(), "no HTML part") {
+		t.Fatalf("stderr = %q", e.errOut.String())
+	}
+}
+
+func TestLatestRawSkipsParse(t *testing.T) {
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "2"}},
+		sources: map[string][]byte{"2": []byte("the raw message")},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		t.Fatal("latest --raw must not parse")
+		return nil, nil
+	}
+	if code := e.run("latest", "--raw"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "the raw message" {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestSaveDuplicateNamesGetSuffix(t *testing.T) {
+	api := &fakeAPI{sources: map[string][]byte{"9": []byte("raw")}}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{Attachments: []model.Attachment{{Index: 1, Filename: "a.txt"}, {Index: 2, Filename: "a.txt"}}}, nil
+	}
+	e.app.AttachmentData = func(_ []byte, index int) (model.Attachment, []byte, error) {
+		return model.Attachment{Index: index, Filename: "a.txt"}, []byte("data"), nil
+	}
+	dir := t.TempDir()
+	if code := e.run("save", "9", "-o", dir); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	want := filepath.Join(dir, "a.txt") + "\n" + filepath.Join(dir, "a-1.txt") + "\n"
+	if got := e.out.String(); got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+func TestSaveNegativeIndexFails(t *testing.T) {
+	api := &fakeAPI{sources: map[string][]byte{"9": []byte("raw")}}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{Attachments: []model.Attachment{{Index: 1, Filename: "a.txt"}}}, nil
+	}
+	if code := e.run("save", "9", "--index=-1", "-o", t.TempDir()); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+}
+
+func TestOTPDoesNotDownloadTwice(t *testing.T) {
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "7"}},
+		sources: map[string][]byte{"7": []byte("7")},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{Date: e.clock.t.Add(-time.Minute)}, nil
+	}
+	if code := e.run("otp", "--wait", "5"); code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if got := api.sourceCalls.Load(); got != 1 {
+		t.Fatalf("source calls = %d, want 1: a checked message must not be read again", got)
+	}
+}
+
+func TestOTPSinceKeepsLooking(t *testing.T) {
+	api := &fakeAPI{
+		refs:    []model.MessageRef{{ID: "old"}, {ID: "new"}},
+		sources: map[string][]byte{"old": []byte("old"), "new": []byte("new")},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		date := e.clock.t.Add(-time.Hour)
+		if string(raw) == "new" {
+			date = e.clock.t.Add(-time.Minute)
+		}
+		return &model.Message{Date: date}, nil
+	}
+	e.app.OTP = func(m *model.Message, _ string) (string, bool) {
+		if m.Date.After(e.clock.t.Add(-time.Hour)) {
+			return "424242", true
+		}
+		return "", false
+	}
+	if code := e.run("otp"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "424242\n" {
+		t.Fatalf("stdout = %q, want the code from the newer message", got)
+	}
+}
+
+func TestDoctorJSON(t *testing.T) {
+	api := &fakeAPI{info: model.ServerInfo{URL: "https://gofer.example.com", Version: "1.2.3", User: "me@example.com"}}
+	e := newEnv(t, api)
+	e.app.loadConfig = func() (config.Config, error) {
+		return config.Config{URL: "https://gofer.example.com", User: "me@example.com", Password: "secret"}, nil
+	}
+	if code := e.run("doctor", "--json"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	var got struct {
+		Checks []struct {
+			Name   string `json:"name"`
+			OK     bool   `json:"ok"`
+			Detail string `json:"detail"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(e.out.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, e.out)
+	}
+	names := make([]string, 0, len(got.Checks))
+	for _, c := range got.Checks {
+		names = append(names, c.Name)
+		if !c.OK {
+			t.Errorf("check %s failed: %s", c.Name, c.Detail)
+		}
+	}
+	if strings.Join(names, ",") != "config,server,login,version" {
+		t.Fatalf("checks = %v", names)
+	}
+}
+
+func TestDoctorNetworkErrorExitsOne(t *testing.T) {
+	api := &fakeAPI{infoErr: errors.New("dial tcp 203.0.113.1:443: connect: connection refused")}
+	e := newEnv(t, api)
+	e.app.loadConfig = func() (config.Config, error) {
+		return config.Config{URL: "https://gofer.example.com", User: "me@example.com", Password: "secret"}, nil
+	}
+	if code := e.run("doctor"); code != 1 {
+		t.Fatalf("exit = %d, want 1 for a network error", code)
+	}
+	if !strings.Contains(e.out.String(), "FAIL") {
+		t.Fatalf("stdout = %q", e.out.String())
+	}
+}
+
+func TestDoctorHidesUserinfo(t *testing.T) {
+	api := &fakeAPI{info: model.ServerInfo{URL: "https://user:secret@gofer.example.com", Version: "1.2.3"}}
+	e := newEnv(t, api)
+	e.app.loadConfig = func() (config.Config, error) {
+		return config.Config{URL: "https://user:secret@gofer.example.com", User: "me@example.com", Password: "secret"}, nil
+	}
+	if code := e.run("doctor"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	got := e.out.String()
+	if strings.Contains(got, "user:secret") || strings.Contains(got, "secret@") {
+		t.Fatalf("stdout leaks userinfo: %q", got)
+	}
+	if !strings.Contains(got, "gofer.example.com") {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestReplyAllSkipsOwnAddresses(t *testing.T) {
+	api := &fakeAPI{
+		sources:  map[string][]byte{"9": []byte("9")},
+		accounts: []model.Account{{ID: "acc-1", Email: "me@example.com"}},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func([]byte) (*model.Message, error) {
+		return &model.Message{
+			Subject: "hello",
+			From:    []model.Address{{Email: "alice@example.com"}},
+			To:      []model.Address{{Email: "me@example.com"}, {Email: "bob@example.com"}},
+			Cc:      []model.Address{{Email: "me@example.com"}, {Email: "carol@example.com"}},
+		}, nil
+	}
+	if code := e.run("reply", "9", "--all", "--body", "thanks"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := strings.Join(api.sends[0].Cc, ","); got != "bob@example.com,carol@example.com" {
+		t.Fatalf("cc = %q", got)
+	}
+}
+
+func TestMoveScopesFolderToMessageAccount(t *testing.T) {
+	api := &fakeAPI{
+		folders: []model.Folder{
+			{ID: "f-a", AccountID: "acc-1", Name: "Archive"},
+			{ID: "f-b", AccountID: "acc-2", Name: "Archive"},
+		},
+		refs: []model.MessageRef{{ID: "5", Account: "acc-2"}},
+	}
+	e := newEnv(t, api)
+	if code := e.run("move", "5", "--folder", "Archive"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if len(api.moves) != 1 || api.moves[0].folder != "f-b" {
+		t.Fatalf("moves = %+v, want f-b", api.moves)
+	}
+}
+
+func TestMoveAmbiguousFolderName(t *testing.T) {
+	api := &fakeAPI{
+		folders: []model.Folder{
+			{ID: "f-a", AccountID: "acc-1", Name: "Archive"},
+			{ID: "f-b", AccountID: "acc-2", Name: "Archive"},
+		},
+	}
+	e := newEnv(t, api)
+	if code := e.run("move", "5", "--folder", "Archive"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if got := e.errOut.String(); !strings.Contains(got, "f-a") || !strings.Contains(got, "f-b") {
+		t.Fatalf("stderr = %q, want the candidate ids", got)
+	}
+}
+
+func TestStdinIDsFromTerminalFails(t *testing.T) {
+	e := newEnv(t, &fakeAPI{})
+	if code := e.run("mark", "read", "-"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(e.errOut.String(), "stdin is a terminal") {
+		t.Fatalf("stderr = %q", e.errOut.String())
+	}
+}
+
+func TestSendRejectsBodyAndFile(t *testing.T) {
+	e := newEnv(t, &fakeAPI{})
+	if code := e.run("send", "--to", "ana@example.com", "--body", "x", "--body-file", "/tmp/y"); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if !strings.Contains(e.errOut.String(), "mutually exclusive") {
+		t.Fatalf("stderr = %q", e.errOut.String())
+	}
+}
+
+func TestOTPSearchWindow(t *testing.T) {
+	api := &fakeAPI{}
+	e := newEnv(t, api)
+	if code := e.run("otp"); code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	opts := api.searches[0]
+	if opts.Limit != 200 {
+		t.Errorf("limit = %d, want 200", opts.Limit)
+	}
+	want := e.clock.t.Add(-10 * time.Minute).Format("2006-01-02")
+	if opts.After != want {
+		t.Errorf("after = %q, want %q", opts.After, want)
 	}
 }

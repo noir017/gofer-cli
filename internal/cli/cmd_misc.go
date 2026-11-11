@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -47,6 +48,12 @@ func (a *App) logoutCommand() *cobra.Command {
 	}
 }
 
+type checkResult struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
 func (a *App) doctorCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "doctor",
@@ -55,66 +62,101 @@ func (a *App) doctorCommand() *cobra.Command {
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			failures := 0
+			checks := make([]checkResult, 0, 4)
 			var kind error
-			ok := func(name, note string) {
-				fmt.Fprintf(a.Stdout, "%-8s ok    %s\n", name, strings.TrimSpace(note))
+			pass := func(name, detail string) {
+				checks = append(checks, checkResult{Name: name, OK: true, Detail: detail})
 			}
-			fail := func(k error, name, format string, args ...any) {
-				failures++
+			fail := func(name string, err error) {
+				checks = append(checks, checkResult{Name: name, OK: false, Detail: err.Error()})
 				if kind == nil {
-					kind = k
+					kind = err
 				}
-				fmt.Fprintf(a.Stdout, "%-8s FAIL  %s\n", name, fmt.Sprintf(format, args...))
 			}
 
 			cfg, err := a.loadConfig()
 			configOK := true
 			switch {
 			case err != nil:
-				fail(model.ErrConfig, "config", "%v", err)
+				fail("config", fmt.Errorf("%w: %w", model.ErrConfig, err))
 				configOK = false
 			case cfg.URL == "":
-				fail(model.ErrConfig, "config", "url is not set")
+				fail("config", fmt.Errorf("%w: url is not set", model.ErrConfig))
 				configOK = false
 			case cfg.User == "":
-				fail(model.ErrConfig, "config", "user is not set")
+				fail("config", fmt.Errorf("%w: user is not set", model.ErrConfig))
 				configOK = false
 			case cfg.Password == "" && cfg.PasswordCmd == "":
-				fail(model.ErrConfig, "config", "password is not set")
+				fail("config", fmt.Errorf("%w: password is not set", model.ErrConfig))
 				configOK = false
 			default:
-				ok("config", cfg.URL)
+				pass("config", displayURL(cfg.URL))
 			}
 
 			if configOK || a.API != nil {
 				api, cerr := a.connect()
-				var info model.ServerInfo
-				if cerr == nil {
-					info, cerr = api.Info(ctx)
-				}
-				switch {
-				case cerr != nil && api == nil:
-					fail(model.ErrConfig, "server", "%v", cerr)
-				case cerr != nil:
-					fail(model.ErrAuth, "server", "%v", cerr)
-				default:
-					ok("server", info.URL+" "+info.Version)
-					if err := api.Login(ctx); err != nil {
-						fail(model.ErrAuth, "login", "%v", err)
+				if cerr != nil {
+					fail("server", cerr)
+				} else if info, ierr := api.Info(ctx); ierr != nil {
+					fail("server", ierr)
+				} else {
+					pass("server", strings.TrimSpace(displayURL(info.URL)+" "+info.Version))
+					if lerr := api.Login(ctx); lerr != nil {
+						fail("login", lerr)
 					} else {
-						ok("login", info.User)
+						pass("login", info.User)
 					}
 				}
 			}
 
-			ok("version", a.Version)
-			if failures > 0 {
-				return fmt.Errorf("%w: %d check(s) failed", kind, failures)
+			pass("version", a.Version)
+
+			if a.flags.json {
+				if err := a.writeJSON(struct {
+					Checks []checkResult `json:"checks"`
+				}{checks}); err != nil {
+					return err
+				}
+			} else {
+				for _, c := range checks {
+					status := "ok"
+					if !c.OK {
+						status = "FAIL"
+					}
+					fmt.Fprintf(a.Stdout, "%-8s %-5s %s\n", c.Name, status, c.Detail)
+				}
+			}
+			if kind != nil {
+				failed := 0
+				for _, c := range checks {
+					if !c.OK {
+						failed++
+					}
+				}
+				return fmt.Errorf("doctor: %d check(s) failed: %w", failed, kind)
 			}
 			return nil
 		},
 	}
+}
+
+// displayURL hides any userinfo before a URL reaches the terminal.
+func displayURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if u.Host != "" {
+		u.User = nil
+		return u.String()
+	}
+	if i := strings.LastIndex(raw, "@"); i >= 0 {
+		return raw[i+1:]
+	}
+	return raw
 }
 
 func (a *App) versionCommand() *cobra.Command {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,12 +39,13 @@ type fakeAPI struct {
 	loginErr  error
 	sendErr   error
 
-	searches []client.SearchOptions
-	syncs    []string
-	acts     []fakeAct
-	moves    []fakeMove
-	sends    []client.SendRequest
-	logins   int
+	searches    []client.SearchOptions
+	syncs       []string
+	acts        []fakeAct
+	moves       []fakeMove
+	sends       []client.SendRequest
+	logins      int
+	sourceCalls atomic.Int64
 }
 
 func (f *fakeAPI) Login(context.Context) error  { f.logins++; return f.loginErr }
@@ -60,6 +62,7 @@ func (f *fakeAPI) Search(_ context.Context, opts client.SearchOptions) ([]model.
 }
 
 func (f *fakeAPI) Source(_ context.Context, id string) ([]byte, error) {
+	f.sourceCalls.Add(1)
 	if f.sourceErr != nil {
 		return nil, f.sourceErr
 	}

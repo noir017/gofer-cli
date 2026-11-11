@@ -15,7 +15,13 @@ func (c *Client) Info(ctx context.Context) (model.ServerInfo, error) {
 }
 
 type SearchOptions struct {
-	Query     string // gofer search syntax: to: from: subject: account: after: ...
+	Query     string // free text, gofer's q parameter
+	From      string
+	To        string
+	Subject   string
+	Body      string
+	After     string // YYYY-MM-DD, inclusive
+	Before    string // YYYY-MM-DD, inclusive
 	AccountID string // "" = all accounts
 	Unread    bool
 	Limit     int // 0 = 20
