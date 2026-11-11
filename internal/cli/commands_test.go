@@ -578,6 +578,127 @@ func TestOTPWaitResyncs(t *testing.T) {
 	}
 }
 
+// arrivalAPI is a search result where the sent and draft copies are newest,
+// as they are right after the caller sends a message.
+func arrivalAPI() *fakeAPI {
+	return &fakeAPI{
+		refs: []model.MessageRef{
+			{ID: "sent", FolderID: "f_sent"},
+			{ID: "draft", FolderID: "f_drafts"},
+			{ID: "inbox", FolderID: "f_inbox"},
+		},
+		sources: map[string][]byte{
+			"sent": []byte("sent"), "draft": []byte("draft"), "inbox": []byte("inbox"),
+		},
+		folders: []model.Folder{
+			{ID: "f_sent", Role: "sent"},
+			{ID: "f_drafts", Role: "drafts"},
+			{ID: "f_inbox", Role: "inbox"},
+			{ID: "f_trash", Role: "trash"},
+		},
+	}
+}
+
+func TestOTPSkipsSentAndDraftCopies(t *testing.T) {
+	api := arrivalAPI()
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Date: e.clock.t, Subject: string(raw)}, nil
+	}
+	e.app.OTP = func(m *model.Message, _ string) (string, bool) {
+		return m.Subject, true
+	}
+	if code := e.run("otp"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "inbox\n" {
+		t.Fatalf("stdout = %q, want the code from the received message", got)
+	}
+	if got := api.sourceCalls.Load(); got != 1 {
+		t.Errorf("source reads = %d, want the sent and draft copies skipped", got)
+	}
+}
+
+func TestLinkSkipsSentCopies(t *testing.T) {
+	api := arrivalAPI()
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Date: e.clock.t, Subject: string(raw)}, nil
+	}
+	e.app.Link = func(m *model.Message, _ string) (string, bool) {
+		return "https://example.com/" + m.Subject, true
+	}
+	if code := e.run("link"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "https://example.com/inbox\n" {
+		t.Fatalf("stdout = %q, want the link from the received message", got)
+	}
+}
+
+func TestOTPKeepsTrashCopies(t *testing.T) {
+	api := arrivalAPI()
+	api.refs = []model.MessageRef{{ID: "trash", FolderID: "f_trash"}}
+	api.sources["trash"] = []byte("trash")
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Date: e.clock.t, Subject: string(raw)}, nil
+	}
+	e.app.OTP = func(m *model.Message, _ string) (string, bool) { return "482913", true }
+	if code := e.run("otp"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); got != "482913\n" {
+		t.Fatalf("stdout = %q, want the message in Trash to match", got)
+	}
+}
+
+func TestOTPWarnsWhenFoldersFail(t *testing.T) {
+	api := arrivalAPI()
+	api.foldersErr = errors.New("folders unavailable")
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Date: e.clock.t, Subject: string(raw)}, nil
+	}
+	e.app.OTP = func(m *model.Message, _ string) (string, bool) { return m.Subject, true }
+	if code := e.run("otp"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	// Without the folder list nothing is filtered, so the sent copy wins.
+	if got := e.out.String(); got != "sent\n" {
+		t.Fatalf("stdout = %q, want the unfiltered result", got)
+	}
+	if got := e.errOut.String(); !strings.Contains(got, "cannot list folders") {
+		t.Fatalf("stderr = %q, want a warning about the folder list", got)
+	}
+}
+
+func TestWaitSkipsSentCopy(t *testing.T) {
+	api := &seqAPI{
+		fakeAPI: &fakeAPI{
+			sources: map[string][]byte{"sent": []byte("sent"), "inbox": []byte("inbox")},
+			folders: []model.Folder{
+				{ID: "f_sent", Role: "sent"},
+				{ID: "f_inbox", Role: "inbox"},
+			},
+		},
+		seq: [][]model.MessageRef{
+			{},
+			{{ID: "sent", FolderID: "f_sent"}, {ID: "inbox", FolderID: "f_inbox"}},
+		},
+	}
+	e := newEnv(t, api)
+	e.app.Parse = func(raw []byte) (*model.Message, error) {
+		return &model.Message{Date: e.clock.t, Subject: string(raw)}, nil
+	}
+	if code := e.run("wait", "--timeout", "10"); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, e.errOut)
+	}
+	if got := e.out.String(); !strings.Contains(got, "Subject: inbox") {
+		t.Fatalf("stdout = %q, want the received message, not the sent copy", got)
+	}
+}
+
 func TestLink(t *testing.T) {
 	api := &fakeAPI{
 		refs:    []model.MessageRef{{ID: "3"}},

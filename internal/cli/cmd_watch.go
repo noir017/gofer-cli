@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -96,6 +97,28 @@ func checkRegexp(command, flag, pattern string) error {
 	return nil
 }
 
+// outgoingFolders returns the ids of the folders a message that arrived never
+// sits in: sent and drafts. otp, link and wait look for mail that arrived, so
+// the copy of a message the caller has just sent must not match. Trash is not
+// skipped: verification mail often ends up in spam and is thrown away from
+// there. A failure to list folders is a warning, not an error: the search
+// then simply matches every folder.
+func (a *App) outgoingFolders(ctx context.Context, api API) map[string]bool {
+	folders, err := api.Folders(ctx, "")
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "gofer-cli: cannot list folders, sent and draft copies are not skipped: %v\n", err)
+		return nil
+	}
+	ids := make(map[string]bool)
+	for _, folder := range folders {
+		switch strings.ToLower(folder.Role) {
+		case "sent", "drafts":
+			ids[folder.ID] = true
+		}
+	}
+	return ids
+}
+
 // findMessage looks at the messages of the last since, newest first, and
 // returns the first value match finds. With wait > 0 it keeps searching every
 // pollInterval, asking the server to sync every syncInterval, until the wait
@@ -111,6 +134,7 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 	}
 	opts := f.options(accountID, 0)
 	opts.After = a.Now().Add(-since).Format(dateFormat)
+	outgoing := a.outgoingFolders(ctx, api)
 	checked := make(map[string]bool)
 	deadline := a.Now().Add(wait)
 	lastSync := a.Now()
@@ -125,6 +149,9 @@ func (a *App) findMessage(ctx context.Context, f filterFlags, since, wait time.D
 		}
 		cutoff := a.Now().Add(-since)
 		for _, ref := range refs {
+			if outgoing[ref.FolderID] {
+				continue // a sent or draft copy, not mail that arrived
+			}
 			if checked[ref.ID] {
 				continue
 			}
@@ -207,6 +234,7 @@ func (a *App) waitCommand() *cobra.Command {
 				return err
 			}
 			opts := f.options(accountID, 0)
+			outgoing := a.outgoingFolders(ctx, api)
 			refs, err := api.Search(ctx, opts)
 			if err != nil {
 				return err
@@ -226,6 +254,9 @@ func (a *App) waitCommand() *cobra.Command {
 					return err
 				}
 				for _, ref := range refs {
+					if outgoing[ref.FolderID] {
+						continue // a sent or draft copy, not mail that arrived
+					}
 					if before[ref.ID] || checked[ref.ID] {
 						continue
 					}

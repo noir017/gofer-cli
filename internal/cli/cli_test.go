@@ -36,6 +36,7 @@ type fakeAPI struct {
 	searchErr   error
 	sourceErr   error
 	accountsErr error
+	foldersErr  error
 	infoErr     error
 	loginErr    error
 	sendErr     error
@@ -93,7 +94,9 @@ func (f *fakeAPI) Accounts(context.Context) ([]model.Account, error) {
 	return f.accounts, f.accountsErr
 }
 
-func (f *fakeAPI) Folders(context.Context, string) ([]model.Folder, error) { return f.folders, nil }
+func (f *fakeAPI) Folders(context.Context, string) ([]model.Folder, error) {
+	return f.folders, f.foldersErr
+}
 
 func (f *fakeAPI) Send(_ context.Context, req client.SendRequest) error {
 	f.sends = append(f.sends, req)
