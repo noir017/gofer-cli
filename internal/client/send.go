@@ -44,10 +44,11 @@ type composeAttachment struct {
 // the account's outgoing mail, not here.
 //
 // With ReplyTo set, gofer is told which message is answered, so the new one is
-// threaded with it. The reply takes its subject from that message, with "Re: "
-// added when it has none, because gofer matches the base subject to keep the
-// thread; SendRequest.Subject is used for a new message only. The reply text
-// is the caller's; nothing is quoted here.
+// threaded with it, and the reply leaves from the account and identity the
+// answered message arrived at unless From says otherwise. The reply takes its
+// subject from that message, with "Re: " added when it has none, because gofer
+// matches the base subject to keep the thread; SendRequest.Subject is used for
+// a new message only. The reply text is the caller's; nothing is quoted here.
 func (c *Client) Send(ctx context.Context, req SendRequest) error {
 	if len(req.To) == 0 && strings.TrimSpace(req.ReplyTo) == "" {
 		return errors.New("send: no recipients")
@@ -57,20 +58,16 @@ func (c *Client) Send(ctx context.Context, req SendRequest) error {
 		return err
 	}
 
-	accountID, identityID := "", ""
-	switch {
-	case strings.TrimSpace(req.From) != "":
-		accounts, err := c.loadComposeAccounts(ctx)
+	var accounts []composeAccount
+	if strings.TrimSpace(req.From) != "" {
+		accounts, err = c.loadComposeAccounts(ctx)
 		if err != nil {
 			return err
 		}
-		ok := false
-		accountID, identityID, ok = resolveSender(accounts, req.From)
-		if !ok {
-			return fmt.Errorf("send: %q is not an address of any account", strings.TrimSpace(req.From))
-		}
-	case reply != nil:
-		accountID, identityID = reply.AccountID, reply.IdentityID
+	}
+	accountID, identityID, err := senderFor(req.From, reply, accounts)
+	if err != nil {
+		return fmt.Errorf("send: %w", err)
 	}
 
 	uploads, err := c.uploadAttachments(ctx, req.Attachments)
@@ -110,6 +107,24 @@ func (c *Client) discardAttachments(ctx context.Context, uploads []composeAttach
 		}
 		closeActionBody(resp)
 	}
+}
+
+// senderFor picks who the message is sent as. From decides when it is set; a
+// reply without one leaves from the account and identity the answered message
+// arrived at, which is where its thread lives. With neither, gofer sends from
+// its first account.
+func senderFor(from string, reply *replySource, accounts []composeAccount) (accountID, identityID string, err error) {
+	if from = strings.TrimSpace(from); from != "" {
+		accountID, identityID, ok := resolveSender(accounts, from)
+		if !ok {
+			return "", "", fmt.Errorf("%q is not an address of any account", from)
+		}
+		return accountID, identityID, nil
+	}
+	if reply != nil {
+		return reply.AccountID, reply.IdentityID, nil
+	}
+	return "", "", nil
 }
 
 // replySource reads the message a reply answers, or nil when replyTo is empty.

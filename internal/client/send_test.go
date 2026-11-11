@@ -98,6 +98,66 @@ func TestComposeFormNoSubject(t *testing.T) {
 	}
 }
 
+func TestSenderFor(t *testing.T) {
+	reply := &replySource{AccountID: "acc_one", IdentityID: "idn_1"}
+	accounts := []composeAccount{
+		{ID: "acc_two", Email: "two@example.com", Identities: []composeIdentity{
+			{ID: "idn_2", Email: "alias@example.com", AccountID: "acc_two"},
+		}},
+	}
+	tests := []struct {
+		name, from, account, identity string
+		reply                         *replySource
+		accounts                      []composeAccount
+		wantErr                       bool
+	}{
+		{name: "reply uses the answered account", reply: reply, account: "acc_one", identity: "idn_1"},
+		{name: "from wins over the answered account", from: "two@example.com", reply: reply, accounts: accounts, account: "acc_two"},
+		{name: "from may be an identity", from: "alias@example.com", reply: reply, accounts: accounts, account: "acc_two", identity: "idn_2"},
+		{name: "neither leaves it to gofer"},
+		{name: "unknown from", from: "nobody@example.com", reply: reply, accounts: accounts, wantErr: true},
+	}
+	for _, tt := range tests {
+		account, identity, err := senderFor(tt.from, tt.reply, tt.accounts)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("%s: no error", tt.name)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", tt.name, err)
+			continue
+		}
+		if account != tt.account || identity != tt.identity {
+			t.Errorf("%s: got (%q, %q), want (%q, %q)", tt.name, account, identity, tt.account, tt.identity)
+		}
+	}
+}
+
+func TestComposeFormReplyWithoutFrom(t *testing.T) {
+	// A reply the caller did not give a From address for must be sent as the
+	// account the original arrived at, not as gofer's first account.
+	reply := &replySource{
+		AccountID:  "acc_one",
+		IdentityID: "idn_1",
+		MessageID:  "<abc@example.com>",
+		Subject:    "Report",
+		FromEmail:  "support@example.com",
+	}
+	account, identity, err := senderFor("", reply, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := composeForm(SendRequest{ReplyTo: "42", Text: "done"}, reply, account, identity, nil)
+	if got := form.Get("account_id"); got != "acc_one" {
+		t.Errorf("account_id = %q, want acc_one", got)
+	}
+	if got := form.Get("identity_id"); got != "idn_1" {
+		t.Errorf("identity_id = %q, want idn_1", got)
+	}
+}
+
 func TestReplySubject(t *testing.T) {
 	tests := []struct{ subject, want string }{
 		{"Report", "Re: Report"},
