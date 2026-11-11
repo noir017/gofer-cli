@@ -59,6 +59,8 @@ func TestOTPPattern(t *testing.T) {
 	}{
 		{"group", `code is (\d{6})`, "482913", true},
 		{"whole", `\d{6}`, "482913", true},
+		{"code shape", `^48`, "482913", true},
+		{"code shape no match", `^99\d{4}$`, "", false},
 		{"case insensitive", `(?i)VERIFICATION CODE IS (\d+)`, "482913", true},
 		{"invalid regexp", `(`, "", false},
 		{"no match", `\d{8}`, "", false},
@@ -70,6 +72,16 @@ func TestOTPPattern(t *testing.T) {
 				t.Errorf("OTP(%q) = %q, %v; want %q, %v", tc.pattern, got, ok, tc.want, tc.ok)
 			}
 		})
+	}
+}
+
+func TestOTPPatternFullWidthPunctuation(t *testing.T) {
+	// A pattern copied from the message keeps its full-width colon; the text
+	// is width-normalized for the scanner, so the raw text is tried too.
+	m := &model.Message{Subject: "联调测试二", Text: "联调测试二。验证码：482913。验证链接：https://example.com/verify"}
+	got, ok := OTP(m, `验证码：(\d{6})`)
+	if !ok || got != "482913" {
+		t.Errorf("OTP = %q, %v; want 482913, true", got, ok)
 	}
 }
 

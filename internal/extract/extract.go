@@ -28,7 +28,10 @@ const (
 )
 
 // OTP returns the verification code in m. A non-empty pattern is a regexp
-// whose first group (or whole match) is the code.
+// that either describes the code in its surroundings, as `code is (\d{6})`,
+// in which case its first group (or whole match) is the code, or describes
+// the code itself, as `^\d{6}$`, in which case the best code the scan finds
+// that matches it is returned.
 func OTP(m *model.Message, pattern string) (string, bool) {
 	if m == nil {
 		return "", false
@@ -43,23 +46,42 @@ func OTP(m *model.Message, pattern string) (string, bool) {
 			if text == "" {
 				continue
 			}
-			match := re.FindStringSubmatch(normalizeWidth(text))
-			if match == nil {
-				continue
-			}
-			if len(match) > 1 {
-				if match[1] != "" {
-					return match[1], true
+			// The raw text first: a pattern copied from the message keeps
+			// the full-width punctuation it was written with. The width-
+			// normalized text then covers patterns written in ASCII.
+			for _, form := range []string{text, normalizeWidth(text)} {
+				match := re.FindStringSubmatch(form)
+				if match == nil {
+					continue
 				}
-				continue
+				if len(match) > 1 {
+					if match[1] != "" {
+						return match[1], true
+					}
+					continue
+				}
+				if match[0] != "" {
+					return match[0], true
+				}
 			}
-			if match[0] != "" {
-				return match[0], true
+		}
+		for _, c := range otpCandidates(m) {
+			if re.MatchString(c.code) {
+				return c.code, true
 			}
 		}
 		return "", false
 	}
 
+	cands := otpCandidates(m)
+	if len(cands) == 0 {
+		return "", false
+	}
+	return cands[0].code, true
+}
+
+// otpCandidates scores every code in m, best first.
+func otpCandidates(m *model.Message) []otpCandidate {
 	var cands []otpCandidate
 	scanOTP(m.Subject, 40, &cands)
 	scanOTP(m.Text, 30, &cands)
@@ -67,7 +89,7 @@ func OTP(m *model.Message, pattern string) (string, bool) {
 		scanOTP(m.HTML, 20, &cands)
 	}
 	if len(cands) == 0 {
-		return "", false
+		return nil
 	}
 
 	seen := make(map[string]bool, len(cands))
@@ -86,7 +108,7 @@ func OTP(m *model.Message, pattern string) (string, bool) {
 		}
 		return uniq[i].pos < uniq[j].pos
 	})
-	return uniq[0].code, true
+	return uniq
 }
 
 var (
