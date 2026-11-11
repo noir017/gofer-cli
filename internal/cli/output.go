@@ -72,7 +72,7 @@ func (a *App) fetchAll(ctx context.Context, api API, refs []model.MessageRef) ([
 	var firstErr error
 	for i := range refs {
 		if errs[i] != nil {
-			fmt.Fprintf(a.Stderr, "gofer-cli: skipping message %s: %v\n", refs[i].ID, errs[i])
+			_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: skipping message %s: %v\n", refs[i].ID, errs[i])
 			if firstErr == nil {
 				firstErr = errs[i]
 			}
@@ -162,7 +162,7 @@ func (a *App) writeList(msgs []model.Message) error {
 	}
 	for i := range msgs {
 		m := &msgs[i]
-		fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			m.ID,
 			oneLine(m.Account),
 			a.displayTime(m.Date),
@@ -211,28 +211,28 @@ func listJSON(msgs []model.Message) ([]map[string]any, error) {
 
 func (a *App) writeMessage(m *model.Message) error {
 	w := a.Stdout
-	fmt.Fprintf(w, "ID: %s\n", cleanText(m.ID))
+	_, _ = fmt.Fprintf(w, "ID: %s\n", cleanText(m.ID))
 	if s := formatAddresses(m.From); s != "" {
-		fmt.Fprintf(w, "From: %s\n", s)
+		_, _ = fmt.Fprintf(w, "From: %s\n", s)
 	}
 	if s := formatAddresses(m.To); s != "" {
-		fmt.Fprintf(w, "To: %s\n", s)
+		_, _ = fmt.Fprintf(w, "To: %s\n", s)
 	}
 	if s := formatAddresses(m.Cc); s != "" {
-		fmt.Fprintf(w, "Cc: %s\n", s)
+		_, _ = fmt.Fprintf(w, "Cc: %s\n", s)
 	}
 	if !m.Date.IsZero() {
-		fmt.Fprintf(w, "Date: %s\n", a.displayTime(m.Date))
+		_, _ = fmt.Fprintf(w, "Date: %s\n", a.displayTime(m.Date))
 	}
-	fmt.Fprintf(w, "Subject: %s\n", cleanText(m.Subject))
-	fmt.Fprintln(w)
-	fmt.Fprint(w, strings.TrimRight(cleanText(m.Text), "\r\n"))
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "Subject: %s\n", cleanText(m.Subject))
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprint(w, strings.TrimRight(cleanText(m.Text), "\r\n"))
+	_, _ = fmt.Fprintln(w)
 	if len(m.Attachments) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "Attachments:")
+		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w, "Attachments:")
 		for _, att := range m.Attachments {
-			fmt.Fprintf(w, "  %d\t%s\t%s\t%d\n", att.Index, cleanText(att.Filename), cleanText(att.ContentType), att.Size)
+			_, _ = fmt.Fprintf(w, "  %d\t%s\t%s\t%d\n", att.Index, cleanText(att.Filename), cleanText(att.ContentType), att.Size)
 		}
 	}
 	return nil
@@ -262,9 +262,9 @@ func (a *App) printMessage(m *model.Message, html bool) error {
 		if m.HTML == "" {
 			return fmt.Errorf("message %s has no HTML part", m.ID)
 		}
-		fmt.Fprint(a.Stdout, m.HTML)
+		_, _ = fmt.Fprint(a.Stdout, m.HTML)
 		if !strings.HasSuffix(m.HTML, "\n") {
-			fmt.Fprintln(a.Stdout)
+			_, _ = fmt.Fprintln(a.Stdout)
 		}
 		return nil
 	}

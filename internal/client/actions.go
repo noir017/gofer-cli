@@ -295,8 +295,8 @@ func missingFolderReason(header, role string, count int) string {
 // closeActionBody drains and closes a response body so the connection can be
 // reused.
 func closeActionBody(resp *http.Response) {
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
-	resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	_ = resp.Body.Close()
 }
 
 // actionStatusError turns a refused request into an error, keeping gofer's own

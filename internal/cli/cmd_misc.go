@@ -132,7 +132,7 @@ func (a *App) doctorCommand() *cobra.Command {
 					if !c.OK {
 						status = "FAIL"
 					}
-					fmt.Fprintf(a.Stdout, "%-8s %-5s %s\n", c.Name, status, c.Detail)
+					_, _ = fmt.Fprintf(a.Stdout, "%-8s %-5s %s\n", c.Name, status, c.Detail)
 				}
 			}
 			if kind != nil {
@@ -180,7 +180,7 @@ func (a *App) versionCommand() *cobra.Command {
 					Version string `json:"version"`
 				}{a.Version})
 			}
-			fmt.Fprintln(a.Stdout, a.Version)
+			_, _ = fmt.Fprintln(a.Stdout, a.Version)
 			return nil
 		},
 	}

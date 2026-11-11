@@ -49,7 +49,7 @@ func (c *Client) login(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 
 	if token := responseCookie(resp, sessionCookieName); token != "" {
@@ -87,7 +87,7 @@ func (c *Client) loginMFA(ctx context.Context, preAuth string) error {
 	if err != nil {
 		return fmt.Errorf("login: two-factor step: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 
 	if token := responseCookie(resp, sessionCookieName); token != "" {

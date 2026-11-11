@@ -46,9 +46,10 @@ func stripTOMLComment(line string) string {
 		}
 		switch quote {
 		case '"':
-			if r == '\\' {
+			switch r {
+			case '\\':
 				escaped = true
-			} else if r == '"' {
+			case '"':
 				quote = 0
 			}
 		case '\'':

@@ -30,7 +30,7 @@ type findFlags struct {
 }
 
 func (f *findFlags) register(cmd *cobra.Command) {
-	f.filterFlags.registerLimit(cmd, findLimit)
+	f.registerLimit(cmd, findLimit)
 	cmd.Flags().DurationVar(&f.since, "since", 10*time.Minute, "only messages newer than this")
 	cmd.Flags().IntVar(&f.wait, "wait", 0, "keep looking for this many seconds")
 }
@@ -106,7 +106,7 @@ func checkRegexp(command, flag, pattern string) error {
 func (a *App) outgoingFolders(ctx context.Context, api API) map[string]bool {
 	folders, err := api.Folders(ctx, "")
 	if err != nil {
-		fmt.Fprintf(a.Stderr, "gofer-cli: cannot list folders, sent and draft copies are not skipped: %v\n", err)
+		_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: cannot list folders, sent and draft copies are not skipped: %v\n", err)
 		return nil
 	}
 	ids := make(map[string]bool)
@@ -216,7 +216,7 @@ func (a *App) writeFound(kind, value string, m *model.Message) error {
 		}
 		return a.writeJSON(out)
 	}
-	fmt.Fprintln(a.Stdout, cleanText(value))
+	_, _ = fmt.Fprintln(a.Stdout, cleanText(value))
 	return nil
 }
 
@@ -273,7 +273,7 @@ func (a *App) waitCommand() *cobra.Command {
 						if errors.Is(err, model.ErrNotFound) {
 							continue
 						}
-						fmt.Fprintf(a.Stderr, "gofer-cli: reading message %s: %v\n", ref.ID, err)
+						_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: reading message %s: %v\n", ref.ID, err)
 						continue // try again on the next round
 					}
 					m, err := a.Parse(raw)

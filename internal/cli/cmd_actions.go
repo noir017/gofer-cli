@@ -200,7 +200,7 @@ func (a *App) accountsCommand() *cobra.Command {
 				return a.writeJSON(accounts)
 			}
 			for _, acc := range accounts {
-				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", cleanText(acc.ID), cleanText(acc.Email), cleanText(acc.Name), cleanText(acc.Provider))
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\n", cleanText(acc.ID), cleanText(acc.Email), cleanText(acc.Name), cleanText(acc.Provider))
 			}
 			return nil
 		},
@@ -234,7 +234,7 @@ func (a *App) foldersCommand() *cobra.Command {
 				return a.writeJSON(folders)
 			}
 			for _, f := range folders {
-				fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%d\n", cleanText(f.ID), cleanText(f.AccountID), cleanText(f.Name), cleanText(f.Role), f.Unread)
+				_, _ = fmt.Fprintf(a.Stdout, "%s\t%s\t%s\t%s\t%d\n", cleanText(f.ID), cleanText(f.AccountID), cleanText(f.Name), cleanText(f.Role), f.Unread)
 			}
 			return nil
 		},

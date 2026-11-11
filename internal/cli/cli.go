@@ -121,7 +121,7 @@ func (a *App) Run(args []string) int {
 	cmd := a.root()
 	cmd.SetArgs(args)
 	if err := cmd.Execute(); err != nil {
-		fmt.Fprintf(a.Stderr, "gofer-cli: %v\n", err)
+		_, _ = fmt.Fprintf(a.Stderr, "gofer-cli: %v\n", err)
 		return exitCode(err)
 	}
 	return exitOK
@@ -229,7 +229,7 @@ func (a *App) done(note string) error {
 		}
 	}
 	if note != "" {
-		fmt.Fprintln(a.Stderr, note)
+		_, _ = fmt.Fprintln(a.Stderr, note)
 	}
 	return nil
 }

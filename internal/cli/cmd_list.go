@@ -114,7 +114,7 @@ func (a *App) attachmentsCommand() *cobra.Command {
 				return a.writeJSON(list)
 			}
 			for _, att := range m.Attachments {
-				fmt.Fprintf(a.Stdout, "%d\t%s\t%s\t%d\n", att.Index, cleanText(att.Filename), cleanText(att.ContentType), att.Size)
+				_, _ = fmt.Fprintf(a.Stdout, "%d\t%s\t%s\t%d\n", att.Index, cleanText(att.Filename), cleanText(att.ContentType), att.Size)
 			}
 			return nil
 		},
@@ -168,7 +168,7 @@ func (a *App) saveCommand() *cobra.Command {
 				}{written})
 			}
 			for _, p := range written {
-				fmt.Fprintln(a.Stdout, p)
+				_, _ = fmt.Fprintln(a.Stdout, p)
 			}
 			return nil
 		},

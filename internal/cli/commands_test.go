@@ -1372,7 +1372,7 @@ func (f *flakySourceAPI) Source(ctx context.Context, id string) ([]byte, error) 
 		f.fails--
 		return nil, errors.New("temporary read error")
 	}
-	return f.seqAPI.fakeAPI.Source(ctx, id)
+	return f.fakeAPI.Source(ctx, id)
 }
 
 func TestWaitRetriesSourceError(t *testing.T) {

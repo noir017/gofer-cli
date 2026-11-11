@@ -188,7 +188,7 @@ func (f *fakeGofer) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	version := f.version
 	f.mu.Unlock()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<html><body><a class="fixed" data-public-version>Gofer %s</a></body></html>`, version)
+	_, _ = fmt.Fprintf(w, `<html><body><a class="fixed" data-public-version>Gofer %s</a></body></html>`, version)
 }
 
 func (f *fakeGofer) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -700,7 +700,7 @@ func TestDoReplaysBodyAfterReLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("do: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if string(body) != "payload" {
 		t.Errorf("echoed body = %q, want the request body replayed", body)

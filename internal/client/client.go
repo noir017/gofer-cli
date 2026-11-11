@@ -8,7 +8,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,8 +19,6 @@ import (
 	"github.com/noir017/gofer-cli/internal/config"
 	"github.com/noir017/gofer-cli/internal/model"
 )
-
-var errNotImplemented = errors.New("not implemented")
 
 const (
 	userAgent         = "gofer-cli"

@@ -50,7 +50,7 @@ func (c *Client) serverVersion(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read server version: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", nil
 	}
@@ -133,7 +133,7 @@ func (c *Client) Search(ctx context.Context, opts SearchOptions) ([]model.Messag
 	default:
 		return nil, responseError("search", resp)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var payload struct {
 		IDs []struct {
@@ -189,7 +189,7 @@ func (c *Client) Source(ctx context.Context, id string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, responseError("read message source", resp)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
