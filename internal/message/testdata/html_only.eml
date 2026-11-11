@@ -1,0 +1,27 @@
+From: Example Accounts <accounts@example.com>
+To: user@example.com
+Subject: Confirm your email address
+Date: Wed, 11 Nov 2026 10:02:00 +0800
+Message-ID: <html-1@example.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+<!DOCTYPE html>
+<html>
+  <body style="font-family: sans-serif; color: #222222;">
+    <p>Hello,</p>
+    <p>Please confirm your email address by clicking the button below.</p>
+    <p style="margin: 24px 0;">
+      <a href="https://example.com/account/verify?token=AbC123xyz&amp;uid=42"
+         style="background: #1a73e8; color: #ffffff; padding: 12px 20px;">Confirm email</a>
+    </p>
+    <p>This link expires in 24 hours.</p>
+    <hr>
+    <p style="font-size: 12px; color: #777777;">
+      <a href="https://example.com/unsubscribe?u=42">Unsubscribe</a> &middot;
+      <a href="https://example.com/privacy">Privacy Policy</a> &middot;
+      <a href="https://example.com/help">Help</a>
+    </p>
+  </body>
+</html>
