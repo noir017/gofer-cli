@@ -134,7 +134,7 @@ func (c *Client) replySource(ctx context.Context, replyTo string) (*replySource,
 		return nil, nil
 	}
 	query := url.Values{"email_id": {replyTo}}
-	body, err := c.getPage(ctx, "/api/compose/source?"+query.Encode())
+	body, err := c.getPageQuery(ctx, "/api/compose/source", query)
 	if err != nil {
 		return nil, err
 	}

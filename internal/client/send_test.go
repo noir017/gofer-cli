@@ -2,12 +2,17 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"github.com/noir017/gofer-cli/internal/config"
 )
 
 func TestComposeFormNew(t *testing.T) {
@@ -156,6 +161,38 @@ func TestComposeFormReplyWithoutFrom(t *testing.T) {
 	}
 	if got := form.Get("identity_id"); got != "idn_1" {
 		t.Errorf("identity_id = %q, want idn_1", got)
+	}
+}
+
+func TestReplySourceAsksByQueryParameter(t *testing.T) {
+	var gotPath, gotEmailID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotEmailID = r.URL.Path, r.URL.Query().Get("email_id")
+		if r.URL.Path != "/api/compose/source" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"account_id":"acc1","identity_id":"idn1",`+
+			`"message_id":"<m@example.com>","subject":"Report","from_email":"alice@example.com"}`)
+	}))
+	defer srv.Close()
+
+	c, err := New(config.Config{URL: srv.URL, User: "u", Password: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.token = "test"
+
+	reply, err := c.replySource(context.Background(), "42")
+	if err != nil {
+		t.Fatalf("replySource: %v", err)
+	}
+	if gotPath != "/api/compose/source" || gotEmailID != "42" {
+		t.Errorf("request = %s?email_id=%s, want the id in the query of /api/compose/source", gotPath, gotEmailID)
+	}
+	if reply.AccountID != "acc1" || reply.Subject != "Report" {
+		t.Errorf("reply = %+v", reply)
 	}
 }
 

@@ -119,7 +119,14 @@ func (c *Client) folderUnread(ctx context.Context) (map[string]int, error) {
 }
 
 func (c *Client) getPage(ctx context.Context, path string) ([]byte, error) {
-	resp, err := c.do(ctx, http.MethodGet, path, nil, nil, "")
+	return c.getPageQuery(ctx, path, nil)
+}
+
+// getPageQuery is getPage with request parameters. The parameters must go
+// through here rather than be pasted into path: urlFor sets Path, which
+// escapes a "?" in it, so the server would see one long path and answer 404.
+func (c *Client) getPageQuery(ctx context.Context, path string, query url.Values) ([]byte, error) {
+	resp, err := c.do(ctx, http.MethodGet, path, query, nil, "")
 	if err != nil {
 		return nil, err
 	}
